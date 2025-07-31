@@ -88,10 +88,18 @@ class RHELResourceManager:
             logger.error(f"Error in CLI mode: {e}")
             sys.exit(1)
     
-    def run_gui(self, headless: bool = False, enhanced: bool = False):
+    def run_gui(self, headless: bool = False, enhanced: bool = False, web: bool = False):
         """Run GUI mode"""
         try:
-            if headless:
+            if web:
+                # Run web-based dashboard
+                try:
+                    from .web_dashboard import start_dashboard
+                except ImportError:
+                    from web_dashboard import start_dashboard
+                
+                start_dashboard()
+            elif headless:
                 # Run headless console interface
                 headless_manager = HeadlessResourceManager()
                 headless_manager.show_menu()
@@ -233,6 +241,7 @@ Examples:
     mode_group.add_argument('--cli', action='store_true', help='Run in CLI mode')
     mode_group.add_argument('--gui', action='store_true', help='Run in GUI mode')
     mode_group.add_argument('--enhanced-gui', action='store_true', help='Run in enhanced GUI mode with real-time charts')
+    mode_group.add_argument('--web-dashboard', action='store_true', help='Run web-based dashboard with auto-refresh')
     mode_group.add_argument('--headless', action='store_true', help='Run in headless console mode')
     mode_group.add_argument('--service', action='store_true', help='Run as a service/daemon')
     
@@ -261,6 +270,8 @@ Examples:
         # Determine mode and run appropriate interface
         if args.service:
             app.run_service(args.interval)
+        elif args.web_dashboard:
+            app.run_gui(web=True)
         elif args.enhanced_gui:
             app.run_gui(enhanced=True)
         elif args.gui:
@@ -274,8 +285,8 @@ Examples:
         elif args.cli or args.status or args.monitor or args.create_group:
             app.run_cli(args)
         else:
-            # Default to enhanced GUI mode
-            app.run_gui(enhanced=True)
+            # Default to web dashboard mode
+            app.run_gui(web=True)
             
     except KeyboardInterrupt:
         print("\n👋 Goodbye!")
