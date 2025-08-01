@@ -33,7 +33,11 @@ class DashboardData:
     """Manages dashboard data and updates"""
     
     def __init__(self):
-        self.charts = RealTimeCharts()
+        try:
+            self.charts = RealTimeCharts()
+        except Exception as e:
+            print(f"Warning: Could not initialize charts: {e}")
+            self.charts = None
         self.data = {}
         self.update_interval = 5  # seconds
         self.running = False
@@ -70,7 +74,11 @@ class DashboardData:
             self.data['alerts'] = self._get_alerts()
             
             # Update charts data
-            self.charts.update_data()
+            if self.charts:
+                try:
+                    self.charts.update_data()
+                except Exception as e:
+                    print(f"Error updating charts: {e}")
             
         except Exception as e:
             print(f"Error updating data: {e}")
@@ -78,23 +86,73 @@ class DashboardData:
     def _get_system_info(self):
         """Get basic system information"""
         try:
+            import platform
+            import os
+            
+            # Get system information
+            hostname = platform.node()
+            platform_info = platform.platform()
+            cpu_count = psutil.cpu_count()
+            
+            # Get CPU frequency
+            cpu_freq = None
+            try:
+                freq = psutil.cpu_freq()
+                if freq:
+                    cpu_freq = {
+                        'current': freq.current,
+                        'min': freq.min,
+                        'max': freq.max
+                    }
+            except:
+                pass
+            
+            # Get boot time and uptime
+            boot_time = psutil.boot_time()
+            boot_time_str = datetime.fromtimestamp(boot_time).isoformat()
+            uptime = datetime.now() - datetime.fromtimestamp(boot_time)
+            uptime_str = str(uptime).split('.')[0]  # Remove microseconds
+            
+            # Get load average
+            load_avg = psutil.getloadavg()
+            
             return {
-                'hostname': psutil.gethostname(),
-                'platform': psutil.sys.platform,
-                'cpu_count': psutil.cpu_count(),
-                'cpu_freq': psutil.cpu_freq()._asdict() if psutil.cpu_freq() else {},
-                'boot_time': datetime.fromtimestamp(psutil.boot_time()).isoformat(),
-                'uptime': str(datetime.now() - datetime.fromtimestamp(psutil.boot_time())),
-                'load_avg': psutil.getloadavg()
+                'hostname': hostname,
+                'platform': platform_info,
+                'cpu_count': cpu_count,
+                'cpu_freq': cpu_freq,
+                'boot_time': boot_time_str,
+                'uptime': uptime_str,
+                'load_avg': load_avg
             }
         except Exception as e:
-            return {'error': str(e)}
+            print(f"Error getting system info: {e}")
+            return {
+                'hostname': 'Unknown',
+                'platform': 'Unknown',
+                'cpu_count': 0,
+                'cpu_freq': {},
+                'boot_time': 'Unknown',
+                'uptime': 'Unknown',
+                'load_avg': [0, 0, 0]
+            }
     
     def _get_resource_usage(self):
         """Get current resource usage"""
         try:
-            cpu_percent = psutil.cpu_percent(interval=1)
+            # Get CPU usage
+            cpu_percent = psutil.cpu_percent(interval=0.1)  # Reduced interval for faster response
+            
+            # Get memory information
             memory = psutil.virtual_memory()
+            
+            # Get swap information
+            swap_percent = 0
+            try:
+                swap = psutil.swap_memory()
+                swap_percent = swap.percent
+            except:
+                pass
             
             return {
                 'cpu_percent': cpu_percent,
@@ -102,10 +160,18 @@ class DashboardData:
                 'memory_used': memory.used,
                 'memory_total': memory.total,
                 'memory_available': memory.available,
-                'swap_percent': psutil.swap_memory().percent if hasattr(psutil, 'swap_memory') else 0
+                'swap_percent': swap_percent
             }
         except Exception as e:
-            return {'error': str(e)}
+            print(f"Error getting resource usage: {e}")
+            return {
+                'cpu_percent': 0,
+                'memory_percent': 0,
+                'memory_used': 0,
+                'memory_total': 0,
+                'memory_available': 0,
+                'swap_percent': 0
+            }
     
     def _get_top_processes(self):
         """Get top processes by resource usage"""
@@ -113,14 +179,22 @@ class DashboardData:
             processes = []
             for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'status']):
                 try:
-                    processes.append(proc.info)
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
+                    proc_info = proc.info
+                    # Ensure all required fields are present
+                    proc_info['cpu_percent'] = proc_info.get('cpu_percent', 0)
+                    proc_info['memory_percent'] = proc_info.get('memory_percent', 0)
+                    proc_info['name'] = proc_info.get('name', 'Unknown')
+                    proc_info['pid'] = proc_info.get('pid', 0)
+                    proc_info['status'] = proc_info.get('status', 'Unknown')
+                    processes.append(proc_info)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
             
             # Sort by CPU usage and get top 10
             processes.sort(key=lambda x: x['cpu_percent'], reverse=True)
             return processes[:10]
         except Exception as e:
+            print(f"Error getting processes: {e}")
             return []
     
     def _get_network_info(self):
@@ -137,13 +211,39 @@ class DashboardData:
                 'interfaces': list(net_if.keys())
             }
         except Exception as e:
-            return {'error': str(e)}
+            print(f"Error getting network info: {e}")
+            return {
+                'bytes_sent': 0,
+                'bytes_recv': 0,
+                'packets_sent': 0,
+                'packets_recv': 0,
+                'interfaces': []
+            }
     
     def _get_disk_info(self):
         """Get disk information"""
         try:
             disk_usage = psutil.disk_usage('/')
             disk_partitions = psutil.disk_partitions()
+            
+            partitions = []
+            for p in disk_partitions[:5]:  # Limit to 5 partitions
+                try:
+                    if os.path.exists(p.mountpoint):
+                        usage = psutil.disk_usage(p.mountpoint)
+                        partitions.append({
+                            'device': p.device,
+                            'mountpoint': p.mountpoint,
+                            'fstype': p.fstype,
+                            'usage': {
+                                'total': usage.total,
+                                'used': usage.used,
+                                'free': usage.free,
+                                'percent': usage.percent
+                            }
+                        })
+                except:
+                    continue
             
             return {
                 'root_usage': {
@@ -152,18 +252,19 @@ class DashboardData:
                     'free': disk_usage.free,
                     'percent': disk_usage.percent
                 },
-                'partitions': [
-                    {
-                        'device': p.device,
-                        'mountpoint': p.mountpoint,
-                        'fstype': p.fstype,
-                        'usage': psutil.disk_usage(p.mountpoint)._asdict() if os.path.exists(p.mountpoint) else {}
-                    }
-                    for p in disk_partitions[:5]  # Limit to 5 partitions
-                ]
+                'partitions': partitions
             }
         except Exception as e:
-            return {'error': str(e)}
+            print(f"Error getting disk info: {e}")
+            return {
+                'root_usage': {
+                    'total': 0,
+                    'used': 0,
+                    'free': 0,
+                    'percent': 0
+                },
+                'partitions': []
+            }
     
     def _get_alerts(self):
         """Get system alerts"""
@@ -255,7 +356,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     'timestamps': [str(ts) for ts in self.dashboard_data.charts.timestamps]
                 }
             else:
-                chart_data = {'error': 'No chart data available'}
+                # Create dummy chart data if charts are not available
+                chart_data = {
+                    'cpu_data': [0, 0, 0, 0, 0],
+                    'memory_data': [0, 0, 0, 0, 0],
+                    'timestamps': [str(datetime.now()) for _ in range(5)]
+                }
             
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
@@ -264,6 +370,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(chart_data, default=str).encode('utf-8'))
             
         except Exception as e:
+            print(f"Error sending chart data: {e}")
             self.send_error(500, str(e))
     
     def send_static_file(self, filename):
@@ -494,14 +601,25 @@ body {
     background: rgba(255, 255, 255, 0.95);
     backdrop-filter: blur(10px);
     border-radius: 15px;
-    padding: 25px;
+    padding: 30px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+    margin: 20px 0;
 }
 
 .chart-container h3 {
     color: #2c3e50;
-    margin-bottom: 20px;
-    font-size: 1.3rem;
+    margin-bottom: 25px;
+    font-size: 1.4rem;
+    font-weight: 600;
+    text-align: center;
+    border-bottom: 2px solid #ecf0f1;
+    padding-bottom: 10px;
+}
+
+#resource-chart {
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
 }
 
 .info-grid {
@@ -610,12 +728,19 @@ let chartData = {
     memory: [],
     timestamps: []
 };
+let chartInitialized = false;
 
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', function() {
     updateDashboard();
     setInterval(updateDashboard, updateInterval);
-    initializeChart();
+    
+    // Initialize chart after a short delay to ensure DOM is ready
+    setTimeout(() => {
+        initializeChart();
+        chartInitialized = true;
+        console.log('Chart initialized successfully');
+    }, 1000);
 });
 
 async function updateDashboard() {
@@ -633,7 +758,9 @@ async function updateDashboard() {
         updateProcessList(data);
         updateNetworkInfo(data);
         updateAlerts(data);
-        updateChart(data);
+        if (chartInitialized) {
+            updateChart(data);
+        }
         
         // Update timestamp
         document.getElementById('last-update').textContent = 
@@ -774,31 +901,87 @@ function formatBytes(bytes) {
 }
 
 function initializeChart() {
+    if (typeof Plotly === 'undefined') {
+        console.error('Plotly not loaded');
+        document.getElementById('resource-chart').innerHTML = 
+            '<div style="text-align: center; padding: 50px; color: #7f8c8d;">Chart loading...</div>';
+        return;
+    }
+    
     const layout = {
-        title: 'Resource Usage Over Time',
-        xaxis: { title: 'Time' },
-        yaxis: { title: 'Usage %', range: [0, 100] },
+        title: {
+            text: 'Resource Usage Over Time',
+            font: { size: 18, color: '#2c3e50' }
+        },
+        xaxis: { 
+            title: 'Time',
+            showgrid: true,
+            gridcolor: '#ecf0f1',
+            zeroline: false
+        },
+        yaxis: { 
+            title: 'Usage %', 
+            range: [0, 100],
+            showgrid: true,
+            gridcolor: '#ecf0f1',
+            zeroline: false
+        },
         height: 400,
-        margin: { t: 50, b: 50, l: 50, r: 50 }
+        margin: { t: 60, b: 60, l: 60, r: 40 },
+        plot_bgcolor: 'rgba(255, 255, 255, 0.8)',
+        paper_bgcolor: 'rgba(255, 255, 255, 0.8)',
+        font: { color: '#2c3e50' },
+        showlegend: true,
+        legend: {
+            x: 0.02,
+            y: 0.98,
+            bgcolor: 'rgba(255, 255, 255, 0.8)',
+            bordercolor: '#ecf0f1'
+        }
     };
     
-    Plotly.newPlot('resource-chart', [], layout);
+    const config = {
+        responsive: true,
+        displayModeBar: true,
+        modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d'],
+        displaylogo: false
+    };
+    
+    try {
+        Plotly.newPlot('resource-chart', [], layout, config);
+    } catch (error) {
+        console.error('Error initializing chart:', error);
+        document.getElementById('resource-chart').innerHTML = 
+            '<div style="text-align: center; padding: 50px; color: #e74c3c;">Chart initialization failed</div>';
+    }
 }
 
 function updateChart(data) {
+    if (typeof Plotly === 'undefined') {
+        console.log('Plotly not available');
+        return;
+    }
+    
     const resourceUsage = data.resource_usage || {};
     const timestamp = new Date();
+    
+    console.log('Updating chart with data:', resourceUsage);
     
     // Add new data points
     chartData.cpu.push(resourceUsage.cpu_percent || 0);
     chartData.memory.push(resourceUsage.memory_percent || 0);
     chartData.timestamps.push(timestamp);
     
-    // Keep only last 20 points
-    if (chartData.cpu.length > 20) {
+    // Keep only last 30 points for better visualization
+    if (chartData.cpu.length > 30) {
         chartData.cpu.shift();
         chartData.memory.shift();
         chartData.timestamps.shift();
+    }
+    
+    // Only update if we have data
+    if (chartData.cpu.length === 0) {
+        return;
     }
     
     const traces = [
@@ -807,22 +990,90 @@ function updateChart(data) {
             y: chartData.cpu,
             type: 'scatter',
             mode: 'lines+markers',
-            name: 'CPU',
-            line: { color: '#3498db', width: 2 },
-            marker: { size: 4 }
+            name: 'CPU Usage',
+            line: { 
+                color: '#3498db', 
+                width: 3,
+                shape: 'spline'
+            },
+            marker: { 
+                size: 6,
+                color: '#3498db',
+                line: { width: 1, color: '#2980b9' }
+            },
+            fill: 'tonexty',
+            fillcolor: 'rgba(52, 152, 219, 0.1)',
+            hovertemplate: '<b>CPU</b><br>Time: %{x}<br>Usage: %{y:.1f}%<extra></extra>'
         },
         {
             x: chartData.timestamps,
             y: chartData.memory,
             type: 'scatter',
             mode: 'lines+markers',
-            name: 'Memory',
-            line: { color: '#e74c3c', width: 2 },
-            marker: { size: 4 }
+            name: 'Memory Usage',
+            line: { 
+                color: '#e74c3c', 
+                width: 3,
+                shape: 'spline'
+            },
+            marker: { 
+                size: 6,
+                color: '#e74c3c',
+                line: { width: 1, color: '#c0392b' }
+            },
+            fill: 'tonexty',
+            fillcolor: 'rgba(231, 76, 60, 0.1)',
+            hovertemplate: '<b>Memory</b><br>Time: %{x}<br>Usage: %{y:.1f}%<extra></extra>'
         }
     ];
     
-    Plotly.react('resource-chart', traces);
+    const currentCPU = chartData.cpu[chartData.cpu.length - 1] || 0;
+    const currentMemory = chartData.memory[chartData.memory.length - 1] || 0;
+    
+    const layout = {
+        title: {
+            text: `Resource Usage Over Time (CPU: ${currentCPU.toFixed(1)}% | Memory: ${currentMemory.toFixed(1)}%)`,
+            font: { size: 16, color: '#2c3e50' }
+        },
+        xaxis: { 
+            title: 'Time',
+            showgrid: true,
+            gridcolor: '#ecf0f1',
+            zeroline: false,
+            tickformat: '%H:%M:%S'
+        },
+        yaxis: { 
+            title: 'Usage %', 
+            range: [0, 100],
+            showgrid: true,
+            gridcolor: '#ecf0f1',
+            zeroline: false
+        },
+        height: 400,
+        margin: { t: 60, b: 60, l: 60, r: 40 },
+        plot_bgcolor: 'rgba(255, 255, 255, 0.8)',
+        paper_bgcolor: 'rgba(255, 255, 255, 0.8)',
+        font: { color: '#2c3e50' },
+        showlegend: true,
+        legend: {
+            x: 0.02,
+            y: 0.98,
+            bgcolor: 'rgba(255, 255, 255, 0.8)',
+            bordercolor: '#ecf0f1'
+        },
+        hovermode: 'x unified'
+    };
+    
+    try {
+        Plotly.react('resource-chart', traces, layout, {
+            transition: {
+                duration: 500,
+                easing: 'cubic-in-out'
+            }
+        });
+    } catch (error) {
+        console.error('Error updating chart:', error);
+    }
 }
 """
 

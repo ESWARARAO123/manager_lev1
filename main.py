@@ -10,20 +10,7 @@ import json
 import logging
 from typing import Dict, Any
 
-# Import our modular components
-try:
-    from .core.resource_manager import ResourceManager
-    from .gui.headless_interface import HeadlessResourceManager
-    from .gui.gui_interface import ResourceManagerGUI
-    from .utils.cli_tool import ResourceManagerCLI
-except ImportError:
-    # Fallback for direct execution
-    from core.resource_manager import ResourceManager
-    from gui.headless_interface import HeadlessResourceManager
-    from gui.gui_interface import ResourceManagerGUI
-    from utils.cli_tool import ResourceManagerCLI
-
-# Configure logging
+# Configure logging first
 try:
     logging.basicConfig(
         level=logging.INFO,
@@ -45,12 +32,55 @@ except PermissionError:
 
 logger = logging.getLogger('ResourceManager')
 
+# Import our modular components with proper error handling
+try:
+    from core.resource_manager import ResourceManager
+    from gui.headless_interface import HeadlessResourceManager
+    from gui.gui_interface import ResourceManagerGUI
+    from utils.cli_tool import ResourceManagerCLI
+    IMPORTS_SUCCESSFUL = True
+except ImportError as e:
+    logger.warning(f"Some modules could not be imported: {e}")
+    IMPORTS_SUCCESSFUL = False
+    # Create dummy classes for graceful degradation
+    class ResourceManager:
+        def __init__(self):
+            pass
+        def get_system_status(self):
+            return {"error": "ResourceManager not available"}
+        def start_monitoring(self, interval):
+            logger.warning("Monitoring not available")
+        def stop_monitoring(self):
+            pass
+        def create_resource_group(self, name, cpu, memory):
+            return False
+    
+    class HeadlessResourceManager:
+        def __init__(self):
+            pass
+        def show_menu(self):
+            print("Headless interface not available")
+    
+    class ResourceManagerGUI:
+        def __init__(self, root):
+            pass
+    
+    class ResourceManagerCLI:
+        def __init__(self):
+            pass
+        def show_status(self):
+            print("CLI tool not available")
+
 class RHELResourceManager:
     """Main application class that coordinates all components"""
     
     def __init__(self):
-        self.resource_manager = ResourceManager()
-        self.cli = ResourceManagerCLI()
+        if IMPORTS_SUCCESSFUL:
+            self.resource_manager = ResourceManager()
+            self.cli = ResourceManagerCLI()
+        else:
+            self.resource_manager = ResourceManager()
+            self.cli = ResourceManagerCLI()
         
     def run_cli(self, args: argparse.Namespace):
         """Run CLI mode"""
@@ -94,11 +124,12 @@ class RHELResourceManager:
             if web:
                 # Run web-based dashboard
                 try:
-                    from .web_dashboard import start_dashboard
-                except ImportError:
                     from web_dashboard import start_dashboard
-                
-                start_dashboard()
+                    start_dashboard()
+                except ImportError as e:
+                    logger.error(f"Web dashboard not available: {e}")
+                    print("Web dashboard not available")
+                    
             elif headless:
                 # Run headless console interface
                 headless_manager = HeadlessResourceManager()
@@ -106,20 +137,24 @@ class RHELResourceManager:
             elif enhanced:
                 # Run enhanced GUI with real-time charts
                 try:
-                    from .gui.enhanced_gui import EnhancedResourceManagerGUI
-                except ImportError:
                     from gui.enhanced_gui import EnhancedResourceManagerGUI
-                
-                import tkinter as tk
-                root = tk.Tk()
-                app = EnhancedResourceManagerGUI(root)
-                root.mainloop()
+                    import tkinter as tk
+                    root = tk.Tk()
+                    app = EnhancedResourceManagerGUI(root)
+                    root.mainloop()
+                except ImportError as e:
+                    logger.error(f"Enhanced GUI not available: {e}")
+                    print("Enhanced GUI not available")
             else:
                 # Run standard graphical interface
-                import tkinter as tk
-                root = tk.Tk()
-                gui = ResourceManagerGUI(root)
-                root.mainloop()
+                try:
+                    import tkinter as tk
+                    root = tk.Tk()
+                    gui = ResourceManagerGUI(root)
+                    root.mainloop()
+                except Exception as e:
+                    logger.error(f"Standard GUI not available: {e}")
+                    print("Standard GUI not available")
                 
         except Exception as e:
             logger.error(f"Error in GUI mode: {e}")
@@ -147,9 +182,11 @@ class RHELResourceManager:
     def generate_data(self, data_type: str = "all"):
         """Generate sample data for testing"""
         try:
-            from .scripts.data_generator import DataGenerator
-        except ImportError:
             from scripts.data_generator import DataGenerator
+        except ImportError:
+            logger.error("Data generator not available")
+            print("Data generator not available")
+            return
         
         try:
             if data_type in ["all", "system"]:
@@ -169,9 +206,11 @@ class RHELResourceManager:
     def generate_charts(self, chart_type: str = "all"):
         """Generate charts and visualizations"""
         try:
-            from .scripts.chart_generator import ChartGenerator
-        except ImportError:
             from scripts.chart_generator import ChartGenerator
+        except ImportError:
+            logger.error("Chart generator not available")
+            print("Chart generator not available")
+            return
         
         try:
             if chart_type in ["all", "architecture"]:
