@@ -1,0 +1,202 @@
+[
+  {
+    "id": "alert_0001",
+    "type": "network_down",
+    "severity": "low",
+    "timestamp": "2025-07-31T10:41:46.969648",
+    "message": "Sample network_down alert with low severity",
+    "value": 57,
+    "threshold": 70,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0002",
+    "type": "memory_high",
+    "severity": "high",
+    "timestamp": "2025-07-31T03:13:46.969803",
+    "message": "Sample memory_high alert with high severity",
+    "value": 90,
+    "threshold": 80,
+    "resolved": "False"
+  },
+  {
+    "id": "alert_0003",
+    "type": "network_down",
+    "severity": "critical",
+    "timestamp": "2025-07-31T02:21:46.969873",
+    "message": "Sample network_down alert with critical severity",
+    "value": 71,
+    "threshold": 70,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0004",
+    "type": "network_down",
+    "severity": "medium",
+    "timestamp": "2025-07-31T20:22:46.969931",
+    "message": "Sample network_down alert with medium severity",
+    "value": 77,
+    "threshold": 70,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0005",
+    "type": "network_down",
+    "severity": "medium",
+    "timestamp": "2025-07-31T03:40:46.969988",
+    "message": "Sample network_down alert with medium severity",
+    "value": 74,
+    "threshold": 70,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0006",
+    "type": "disk_full",
+    "severity": "high",
+    "timestamp": "2025-07-31T15:56:46.970043",
+    "message": "Sample disk_full alert with high severity",
+    "value": 77,
+    "threshold": 70,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0007",
+    "type": "disk_full",
+    "severity": "critical",
+    "timestamp": "2025-07-31T02:32:46.970098",
+    "message": "Sample disk_full alert with critical severity",
+    "value": 74,
+    "threshold": 70,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0008",
+    "type": "disk_full",
+    "severity": "high",
+    "timestamp": "2025-07-31T05:15:46.970151",
+    "message": "Sample disk_full alert with high severity",
+    "value": 56,
+    "threshold": 70,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0009",
+    "type": "cpu_high",
+    "severity": "critical",
+    "timestamp": "2025-07-31T11:34:46.970205",
+    "message": "Sample cpu_high alert with critical severity",
+    "value": 88,
+    "threshold": 80,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0010",
+    "type": "memory_high",
+    "severity": "critical",
+    "timestamp": "2025-07-31T10:24:46.970259",
+    "message": "Sample memory_high alert with critical severity",
+    "value": 86,
+    "threshold": 80,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0011",
+    "type": "disk_full",
+    "severity": "medium",
+    "timestamp": "2025-07-31T08:48:46.970312",
+    "message": "Sample disk_full alert with medium severity",
+    "value": 67,
+    "threshold": 70,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0012",
+    "type": "memory_high",
+    "severity": "medium",
+    "timestamp": "2025-07-31T19:30:46.970366",
+    "message": "Sample memory_high alert with medium severity",
+    "value": 89,
+    "threshold": 80,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0013",
+    "type": "service_down",
+    "severity": "high",
+    "timestamp": "2025-07-31T07:58:46.970420",
+    "message": "Sample service_down alert with high severity",
+    "value": 61,
+    "threshold": 70,
+    "resolved": "False"
+  },
+  {
+    "id": "alert_0014",
+    "type": "network_down",
+    "severity": "medium",
+    "timestamp": "2025-07-31T10:09:46.970473",
+    "message": "Sample network_down alert with medium severity",
+    "value": 57,
+    "threshold": 70,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0015",
+    "type": "network_down",
+    "severity": "low",
+    "timestamp": "2025-07-31T18:03:46.970526",
+    "message": "Sample network_down alert with low severity",
+    "value": 65,
+    "threshold": 70,
+    "resolved": "False"
+  },
+  {
+    "id": "alert_0016",
+    "type": "service_down",
+    "severity": "critical",
+    "timestamp": "2025-07-31T12:43:46.970579",
+    "message": "Sample service_down alert with critical severity",
+    "value": 78,
+    "threshold": 70,
+    "resolved": "False"
+  },
+  {
+    "id": "alert_0017",
+    "type": "cpu_high",
+    "severity": "low",
+    "timestamp": "2025-07-31T19:15:46.970632",
+    "message": "Sample cpu_high alert with low severity",
+    "value": 80,
+    "threshold": 80,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0018",
+    "type": "disk_full",
+    "severity": "high",
+    "timestamp": "2025-07-31T09:16:46.970686",
+    "message": "Sample disk_full alert with high severity",
+    "value": 52,
+    "threshold": 70,
+    "resolved": "False"
+  },
+  {
+    "id": "alert_0019",
+    "type": "disk_full",
+    "severity": "low",
+    "timestamp": "2025-07-31T15:45:46.970739",
+    "message": "Sample disk_full alert with low severity",
+    "value": 75,
+    "threshold": 70,
+    "resolved": "True"
+  },
+  {
+    "id": "alert_0020",
+    "type": "cpu_high",
+    "severity": "critical",
+    "timestamp": "2025-07-31T13:50:46.970798",
+    "message": "Sample cpu_high alert with critical severity",
+    "value": 80,
+    "threshold": 80,
+    "resolved": "True"
+  }
+]

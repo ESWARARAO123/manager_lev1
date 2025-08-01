@@ -100,7 +100,7 @@ class ChartGenerator:
         )
         
         # Save the chart
-        fig.write_image(output_file)
+        fig.write_image(output_file, format='png')
         return output_file
     
     @staticmethod
@@ -227,7 +227,7 @@ class ChartGenerator:
         )
         
         # Save the chart
-        fig.write_image(output_file)
+        fig.write_image(output_file, format='png')
         return output_file
     
     @staticmethod
@@ -282,5 +282,5 @@ class ChartGenerator:
         )
         
         # Save the chart
-        fig.write_image(output_file)
+        fig.write_image(output_file, format='png')
         return output_file 
