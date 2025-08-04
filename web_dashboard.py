@@ -52,13 +52,33 @@ class DashboardData:
             print(f"Warning: Could not initialize server discovery: {e}")
             self.server_discovery = None
         
+        # Initialize network scanner
+        try:
+            from utils.quick_network_scanner import QuickNetworkScanner
+            self.network_scanner = QuickNetworkScanner()
+            print("✅ Quick network scanner initialized")
+        except ImportError as e:
+            print(f"Warning: Quick network scanner module not available: {e}")
+            self.network_scanner = None
+        except Exception as e:
+            print(f"Warning: Could not initialize quick network scanner: {e}")
+            self.network_scanner = None
+        
         self.data = {}
         self.update_interval = 5  # seconds
         self.running = False
         self.update_thread = None
+        self.current_server = None  # Track current server selection
         
     def start_monitoring(self):
         """Start continuous monitoring"""
+        # Initialize current server to local IP
+        try:
+            from utils.network_utils import get_local_ip
+            self.current_server = get_local_ip()
+        except:
+            self.current_server = '127.0.0.1'
+        
         self.running = True
         self.update_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.update_thread.start()
@@ -68,6 +88,20 @@ class DashboardData:
         self.running = False
         if self.update_thread:
             self.update_thread.join(timeout=1)
+    
+    def set_current_server(self, server_ip):
+        """Set the current server and refresh data"""
+        from utils.network_utils import get_local_ip
+        local_ip = get_local_ip()
+        
+        if server_ip == 'LOCAL_IP' or server_ip == local_ip:
+            self.current_server = local_ip
+        else:
+            self.current_server = server_ip
+        
+        # Refresh data for the new server
+        self.update_data()
+        print(f"✅ Switched to server: {self.current_server}")
     
     def _monitor_loop(self):
         """Main monitoring loop"""
@@ -195,6 +229,17 @@ class DashboardData:
     def _get_top_processes(self):
         """Get top processes by resource usage"""
         try:
+            # Check if we have a remote server selected
+            if hasattr(self, 'current_server') and self.current_server:
+                from utils.network_utils import is_local_server
+                if not is_local_server(self.current_server) and self.server_discovery:
+                    # Get remote server processes
+                    if self.current_server in self.server_discovery.connected_servers:
+                        server_info = self.server_discovery.connected_servers[self.current_server]
+                        if 'info' in server_info and 'processes' in server_info['info']:
+                            return server_info['info']['processes']
+            
+            # Local server or fallback - use psutil
             processes = []
             for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'status']):
                 try:
@@ -242,6 +287,33 @@ class DashboardData:
     def _get_disk_info(self):
         """Get disk information"""
         try:
+            # Check if we have a remote server selected
+            if hasattr(self, 'current_server') and self.current_server:
+                from utils.network_utils import is_local_server
+                if not is_local_server(self.current_server) and self.server_discovery:
+                    # Get remote server disk info
+                    if self.current_server in self.server_discovery.connected_servers:
+                        server_info = self.server_discovery.connected_servers[self.current_server]
+                        if 'info' in server_info and 'disk_partitions' in server_info['info']:
+                            partitions = server_info['info']['disk_partitions']
+                            root_usage = None
+                            
+                            # Find root partition
+                            for partition in partitions:
+                                if partition.get('mountpoint') == '/':
+                                    root_usage = partition.get('usage', {})
+                                    break
+                            
+                            if not root_usage:
+                                # Use first partition as fallback
+                                root_usage = partitions[0].get('usage', {}) if partitions else {}
+                            
+                            return {
+                                'root_usage': root_usage,
+                                'partitions': partitions
+                            }
+            
+            # Local server or fallback - use psutil
             disk_usage = psutil.disk_usage('/')
             disk_partitions = psutil.disk_partitions()
             
@@ -372,8 +444,26 @@ class DashboardData:
                             'disk_percent': system_info.get('disk_percent', 0),
                             'load_avg': system_info.get('load_avg', 0)
                         }
+                        print(f"✅ Added connected server {ip} with CPU: {system_info.get('cpu_percent', 0)}%, Memory: {system_info.get('memory_percent', 0)}%")
             except Exception as e:
                 print(f"Error getting connected servers info: {e}")
+                # Also try to get data directly from connected_servers
+                try:
+                    for ip, connection in self.server_discovery.connected_servers.items():
+                        if connection.get('ssh_connected'):
+                            info = connection.get('info', {})
+                            server_status[ip] = {
+                                'name': info.get('hostname', ip),
+                                'ip': ip,
+                                'status': 'Online',
+                                'cpu_percent': info.get('cpu_percent', 0),
+                                'memory_percent': info.get('memory_percent', 0),
+                                'disk_percent': info.get('disk_percent', 0),
+                                'load_avg': info.get('load_avg', 0)
+                            }
+                            print(f"✅ Added connected server {ip} from direct info")
+                except Exception as e2:
+                    print(f"Error getting direct connected servers info: {e2}")
         
         return server_status
     
@@ -510,6 +600,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.handle_save_config()
         elif path == '/api/load-config':
             self.handle_load_config()
+        elif path == '/api/switch-server':
+            self.handle_switch_server()
         else:
             self.send_error(404, "Not Found")
     
@@ -640,69 +732,72 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 request_data = json.loads(post_data.decode('utf-8'))
                 network_range = request_data.get('network_range', '172.16.16')
                 username = request_data.get('username', 'root')
+                max_ips = request_data.get('max_ips', 50)
+                start_ip = request_data.get('start_ip', 1)
             else:
                 network_range = '172.16.16'
                 username = 'root'
+                max_ips = 50
+                start_ip = 1
             
-            # Use the new network scanner
-            try:
-                from utils.network_scanner import NetworkScanner
-                
-                # Start scanning in a separate thread to avoid blocking
-                import threading
-                
-                def scan_thread():
-                    try:
-                        scanner = NetworkScanner()
-                        discovered = scanner.scan_network(network_range, username)
-                        print(f"Network scan completed. Found {len(discovered)} SSH-accessible servers.")
-                        
-                        # Update server discovery with results
-                        if self.dashboard_data and self.dashboard_data.server_discovery:
-                            for server in discovered:
-                                self.dashboard_data.server_discovery.discovered_servers[server['ip']] = {
-                                    'status': 'discovered',
-                                    'ssh_connected': False,
-                                    'info': server,
-                                    'discovered_at': server['discovered_at']
-                                }
-                    except Exception as e:
-                        print(f"Error during network scan: {e}")
-                
-                thread = threading.Thread(target=scan_thread, daemon=True)
-                thread.start()
-                
-                response = {
-                    'success': True,
-                    'message': f'Network scan started for {network_range}.x with username {username}',
-                    'discovered_count': len(self.dashboard_data.server_discovery.discovered_servers) if self.dashboard_data and self.dashboard_data.server_discovery else 0,
-                    'discovered_servers': self.dashboard_data.server_discovery.discovered_servers if self.dashboard_data and self.dashboard_data.server_discovery else {}
-                }
-            except ImportError:
-                # Fallback to old method
-                if self.dashboard_data and self.dashboard_data.server_discovery:
-                    import threading
+            # Use the network scanner from dashboard data
+            if self.dashboard_data and self.dashboard_data.network_scanner:
+                # Perform the scan synchronously to get immediate results
+                try:
+                    discovered = self.dashboard_data.network_scanner.quick_scan(network_range, username, max_ips=max_ips, start_ip=start_ip)
+                    print(f"Network scan completed. Found {len(discovered)} SSH-accessible servers.")
                     
-                    def scan_thread():
-                        try:
-                            discovered = self.dashboard_data.server_discovery.scan_network()
-                            print(f"Network scan completed. Found {len(discovered)} servers.")
-                        except Exception as e:
-                            print(f"Error during network scan: {e}")
-                    
-                    thread = threading.Thread(target=scan_thread, daemon=True)
-                    thread.start()
+                    # Update server discovery with results
+                    if self.dashboard_data and self.dashboard_data.server_discovery:
+                        for server in discovered:
+                            self.dashboard_data.server_discovery.discovered_servers[server['ip']] = {
+                                'status': 'discovered',
+                                'ssh_connected': False,
+                                'info': server,
+                                'discovered_at': server['discovered_at']
+                            }
                     
                     response = {
                         'success': True,
-                        'message': 'Network scan started (fallback method)',
-                        'discovered_count': len(self.dashboard_data.server_discovery.discovered_servers),
-                        'discovered_servers': self.dashboard_data.server_discovery.discovered_servers
+                        'message': f'✅ Scan completed. Found {len(discovered)} SSH-accessible servers.',
+                        'discovered_count': len(discovered),
+                        'discovered_servers': self.dashboard_data.server_discovery.discovered_servers if self.dashboard_data and self.dashboard_data.server_discovery else {}
                     }
+                except Exception as e:
+                    print(f"Error during network scan: {e}")
+                    response = {
+                        'success': False,
+                        'error': f'Scan failed: {str(e)}',
+                        'discovered_count': 0,
+                        'discovered_servers': {}
+                    }
+            else:
+                # Fallback to old method
+                if self.dashboard_data and self.dashboard_data.server_discovery:
+                    try:
+                        discovered = self.dashboard_data.server_discovery.scan_network()
+                        print(f"Network scan completed. Found {len(discovered)} servers.")
+                        
+                        response = {
+                            'success': True,
+                            'message': f'✅ Scan completed. Found {len(discovered)} servers.',
+                            'discovered_count': len(discovered),
+                            'discovered_servers': self.dashboard_data.server_discovery.discovered_servers
+                        }
+                    except Exception as e:
+                        print(f"Error during network scan: {e}")
+                        response = {
+                            'success': False,
+                            'error': f'Scan failed: {str(e)}',
+                            'discovered_count': 0,
+                            'discovered_servers': {}
+                        }
                 else:
                     response = {
                         'success': False,
-                        'error': 'Server discovery not available'
+                        'error': 'Network scanner not available',
+                        'discovered_count': 0,
+                        'discovered_servers': {}
                     }
             
             self.send_response(200)
@@ -747,6 +842,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 response = {'success': False, 'error': 'IP address is required'}
             elif self.dashboard_data and self.dashboard_data.server_discovery:
                 success = self.dashboard_data.server_discovery.connect_to_server(ip, username, password)
+                
+                # If connection successful, fetch server information
+                if success:
+                    try:
+                        # Get real-time system information
+                        system_info = self.dashboard_data.server_discovery._get_system_info(ip, username, password)
+                        if system_info:
+                            # Update the connected servers list with real-time data
+                            if ip in self.dashboard_data.server_discovery.connected_servers:
+                                self.dashboard_data.server_discovery.connected_servers[ip]['info'].update(system_info)
+                                self.dashboard_data.server_discovery.connected_servers[ip]['last_check'] = datetime.now().isoformat()
+                            print(f"✅ Successfully connected to {ip} and fetched real-time system info")
+                            print(f"   CPU: {system_info.get('cpu_percent', 0)}%, Memory: {system_info.get('memory_percent', 0)}%, Disk: {system_info.get('disk_percent', 0)}%")
+                            print(f"   Processes: {len(system_info.get('processes', []))}, Partitions: {len(system_info.get('disk_partitions', []))}")
+                        else:
+                            print(f"⚠️  Connected to {ip} but couldn't fetch real-time system info")
+                    except Exception as info_error:
+                        print(f"⚠️  Connected to {ip} but error fetching real-time info: {info_error}")
+                
                 response = {
                     'success': success,
                     'message': f"Connection {'successful' if success else 'failed'} to {ip}"
@@ -824,6 +938,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 }
             else:
                 response = {'success': False, 'error': 'Server discovery not available'}
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error(500, str(e))
+    
+    def handle_switch_server(self):
+        """Handle switch server request"""
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            request_data = json.loads(post_data.decode('utf-8'))
+            
+            ip = request_data.get('ip')
+            
+            if not ip:
+                response = {'success': False, 'error': 'IP address is required'}
+            elif self.dashboard_data:
+                self.dashboard_data.set_current_server(ip)
+                response = {
+                    'success': True,
+                    'message': f"Switched to server {ip}"
+                }
+            else:
+                response = {'success': False, 'error': 'Dashboard data not available'}
             
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
@@ -954,6 +1097,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         <div class="form-group">
                             <label for="ssh-username">SSH Username:</label>
                             <input type="text" id="ssh-username" class="form-input" placeholder="root" value="root">
+                        </div>
+                        <div class="form-group">
+                            <label for="max-ips">Max IPs to Scan:</label>
+                            <input type="number" id="max-ips" class="form-input" placeholder="50" value="50" min="1" max="254">
+                        </div>
+                        <div class="form-group">
+                            <label for="start-ip">Start IP (optional):</label>
+                            <input type="number" id="start-ip" class="form-input" placeholder="1" value="1" min="1" max="254">
                         </div>
                     </div>
                     <div class="discovery-controls">
@@ -1670,17 +1821,34 @@ function isLocalServer(ip) {
 // Server change function
 function changeServer() {
     currentServer = document.getElementById('server-select').value;
-    console.log('Switched to server:', currentServer);
+    console.log('Switching to server:', currentServer);
     
-    // Clear chart data when switching servers
-    chartData = {
-        cpu: [],
-        memory: [],
-        timestamps: []
-    };
-    
-    // Update dashboard immediately
-    updateDashboard();
+    // Call the API to switch servers
+    fetch('/api/switch-server', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: currentServer })
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            console.log('Successfully switched to server:', currentServer);
+            // Clear chart data when switching servers
+            chartData = {
+                cpu: [],
+                memory: [],
+                timestamps: []
+            };
+            
+            // Update dashboard immediately
+            updateDashboard();
+        } else {
+            console.error('Failed to switch server:', result.error);
+        }
+    })
+    .catch(error => {
+        console.error('Error switching server:', error);
+    });
 }
 
 async function updateDashboard() {
@@ -2183,6 +2351,8 @@ async function startNetworkScan() {
     const status = document.getElementById('scan-status');
     const networkRange = document.getElementById('network-range').value;
     const sshUsername = document.getElementById('ssh-username').value;
+    const maxIps = parseInt(document.getElementById('max-ips').value) || 50;
+    const startIp = parseInt(document.getElementById('start-ip').value) || 1;
     
     if (!networkRange) {
         alert('Please enter a network range (e.g., 172.16.16)');
@@ -2191,7 +2361,7 @@ async function startNetworkScan() {
     
     scanBtn.style.display = 'none';
     stopBtn.style.display = 'inline-block';
-    status.textContent = '🔍 Scanning network...';
+    status.textContent = `🔍 Scanning network ${networkRange}.x (IPs ${startIp}-${startIp + maxIps - 1})...`;
     
     try {
         const response = await fetch('/api/scan-network', {
@@ -2199,13 +2369,15 @@ async function startNetworkScan() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 network_range: networkRange,
-                username: sshUsername
+                username: sshUsername,
+                max_ips: maxIps,
+                start_ip: startIp
             })
         });
         const result = await response.json();
         
         if (result.success) {
-            status.textContent = `✅ Scan completed. Found ${result.discovered_count} servers.`;
+            status.textContent = result.message || `✅ Scan completed. Found ${result.discovered_count} servers.`;
             updateDiscoveredServers(result.discovered_servers);
         } else {
             status.textContent = `❌ Scan failed: ${result.error}`;
@@ -2262,6 +2434,52 @@ function updateDiscoveredServers(servers) {
             </div>
         `;
     }).join('');
+    
+    // Also update the server selector dropdown with discovered servers
+    updateServerSelectorWithDiscovered(servers);
+}
+
+function updateServerSelectorWithDiscovered(servers) {
+    const selector = document.getElementById('server-select');
+    const currentValue = selector.value;
+    
+    // Keep local server as first option
+    selector.innerHTML = '<option value="LOCAL_IP">Local Server (LOCAL_IP)</option>';
+    
+    // Add discovered servers to dropdown
+    if (servers && Object.keys(servers).length > 0) {
+        Object.entries(servers).forEach(([ip, info]) => {
+            const serverInfo = info.info || {};
+            const hostname = serverInfo.hostname || ip;
+            const option = document.createElement('option');
+            option.value = ip;
+            option.textContent = `${hostname} (${ip}) - Discovered`;
+            selector.appendChild(option);
+        });
+    }
+    
+    // Add connected servers (these will appear after discovered servers)
+    fetch('/api/server-status')
+        .then(response => response.json())
+        .then(result => {
+            if (result.success && result.connected_servers) {
+                Object.entries(result.connected_servers).forEach(([ip, info]) => {
+                    // Check if this server is already in the dropdown
+                    if (!selector.querySelector(`option[value="${ip}"]`)) {
+                        const option = document.createElement('option');
+                        option.value = ip;
+                        option.textContent = `${info.info?.hostname || ip} (${ip}) - Connected`;
+                        selector.appendChild(option);
+                    }
+                });
+                
+                // Restore current selection if it still exists
+                if (currentValue && selector.querySelector(`option[value="${currentValue}"]`)) {
+                    selector.value = currentValue;
+                }
+            }
+        })
+        .catch(error => console.error('Error updating server selector:', error));
 }
 
 // Server Connection Functions
@@ -2282,6 +2500,13 @@ async function connectToServer(ip) {
             alert(`✅ Successfully connected to ${ip}`);
             loadServerStatus();
             updateServerSelector();
+            
+            // Add the new server to the selector dropdown
+            const selector = document.getElementById('server-select');
+            const option = document.createElement('option');
+            option.value = ip;
+            option.textContent = `${ip} - Connected`;
+            selector.appendChild(option);
         } else {
             alert(`❌ Failed to connect to ${ip}: ${result.error}`);
         }
@@ -2342,6 +2567,13 @@ async function addServer() {
             document.getElementById('server-password').value = '';
             loadServerStatus();
             updateServerSelector();
+            
+            // Add the new server to the selector dropdown
+            const selector = document.getElementById('server-select');
+            const option = document.createElement('option');
+            option.value = ip;
+            option.textContent = `${ip} - Connected`;
+            selector.appendChild(option);
         } else {
             alert(`❌ Failed to connect to ${ip}: ${result.error}`);
         }

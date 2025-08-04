@@ -110,24 +110,35 @@ class ServerDiscovery:
                     'ssh', '-o', 'ConnectTimeout=5',
                     '-o', 'StrictHostKeyChecking=no',
                     f'{username}@{ip}', 'echo "SSH test successful"'
-                ], capture_output=True, text=True, timeout=10)
+                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
             else:
                 # Try key-based authentication
                 result = subprocess.run([
                     'ssh', '-o', 'ConnectTimeout=5',
                     '-o', 'BatchMode=yes',
                     f'{username}@{ip}', 'echo "SSH test successful"'
-                ], capture_output=True, text=True, timeout=10)
+                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
             
             return result.returncode == 0
-        except:
+        except Exception as e:
+            print(f"SSH test error: {e}")
             return False
     
     def connect_to_server(self, ip: str, username: str = 'root', password: str = None) -> bool:
         """Establish SSH connection to a server"""
         if self.test_ssh_connection(ip, username, password):
+            print(f"Debug: SSH test passed for {ip}")
             # Get server information
             server_info = self._get_server_info(ip, username, password)
+            print(f"Debug: Got server info: {server_info}")
+            
+            # Get real-time system information
+            print(f"Debug: Getting system info for {ip}")
+            system_info = self._get_system_info(ip, username, password)
+            print(f"Debug: Got system info: {system_info}")
+            
+            # Merge the information
+            server_info.update(system_info)
             
             self.connected_servers[ip] = {
                 'ssh_connected': True,
@@ -143,7 +154,7 @@ class ServerDiscovery:
                 self.discovered_servers[ip]['ssh_connected'] = True
                 self.discovered_servers[ip]['info'] = server_info
             
-            print(f"✅ Connected to {ip}")
+            print(f"✅ Connected to {ip} with CPU: {system_info.get('cpu_percent', 0)}%, Memory: {system_info.get('memory_percent', 0)}%")
             return True
         else:
             print(f"❌ Failed to connect to {ip}")
@@ -159,17 +170,17 @@ class ServerDiscovery:
             
             # Get hostname
             hostname_cmd = f'{ssh_prefix} "hostname"'
-            hostname_result = subprocess.run(hostname_cmd, shell=True, capture_output=True, text=True, timeout=10)
+            hostname_result = subprocess.run(hostname_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
             hostname = hostname_result.stdout.strip() if hostname_result.returncode == 0 else ip
             
             # Get OS info
             os_cmd = f'{ssh_prefix} "cat /etc/os-release | grep PRETTY_NAME | cut -d\\"\\" -f2"'
-            os_result = subprocess.run(os_cmd, shell=True, capture_output=True, text=True, timeout=10)
+            os_result = subprocess.run(os_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
             os_info = os_result.stdout.strip() if os_result.returncode == 0 else "Unknown"
             
             # Get CPU info
             cpu_cmd = f'{ssh_prefix} "nproc"'
-            cpu_result = subprocess.run(cpu_cmd, shell=True, capture_output=True, text=True, timeout=10)
+            cpu_result = subprocess.run(cpu_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
             cpu_cores = cpu_result.stdout.strip() if cpu_result.returncode == 0 else "Unknown"
             
             return {
@@ -243,43 +254,122 @@ class ServerDiscovery:
             else:
                 ssh_prefix = f'ssh -o BatchMode=yes {username}@{ip}'
             
-            # Get CPU usage
-            cpu_cmd = f'{ssh_prefix} "top -bn1 | grep \\"Cpu(s)\\" | awk \\"{{print \\$2}}\\" | cut -d\\"%\\" -f1"'
-            cpu_result = subprocess.run(cpu_cmd, shell=True, capture_output=True, text=True, timeout=10)
-            cpu_usage = float(cpu_result.stdout.strip()) if cpu_result.stdout.strip() else 0.0
+            # Get CPU usage - using mpstat for better reliability
+            cpu_cmd = f'{ssh_prefix} "mpstat 1 1 | tail -1"'
+            print(f"Debug: Running CPU command: {cpu_cmd}")
+            cpu_result = subprocess.run(cpu_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+            print(f"Debug: CPU result stdout: '{cpu_result.stdout.strip()}'")
+            print(f"Debug: CPU result stderr: '{cpu_result.stderr.strip()}'")
             
-            # Get memory usage
-            mem_cmd = f'{ssh_prefix} "free -m | grep \\"^Mem:\\" | awk \\"{{print \\$2, \\$3, \\$4, \\$3/\\$2*100}}\\""'
-            mem_result = subprocess.run(mem_cmd, shell=True, capture_output=True, text=True, timeout=10)
+            cpu_usage = 0.0
+            if cpu_result.stdout.strip():
+                # Parse the mpstat output: "Average: all 2.77 8.52 0.82 0.00 0.11 0.15 0.00 0.00 0.00 87.62"
+                parts = cpu_result.stdout.strip().split()
+                print(f"Debug: mpstat parts: {parts}")
+                if len(parts) >= 12:
+                    idle_percent = float(parts[11])  # The last number is idle percentage
+                    cpu_usage = 100.0 - idle_percent
+                    print(f"Debug: Idle percent: {idle_percent}, CPU usage: {cpu_usage}")
+            
+            print(f"Debug: CPU usage: {cpu_usage}")
+            
+            # Get memory usage - using shell=True with simpler command
+            mem_cmd = f'{ssh_prefix} "free | grep Mem"'
+            mem_result = subprocess.run(mem_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+            print(f"Debug: Memory result stdout: '{mem_result.stdout.strip()}'")
+            print(f"Debug: Memory result stderr: '{mem_result.stderr.strip()}'")
             
             memory_info = {}
             if mem_result.stdout.strip():
+                # Parse manually: "Mem: 263485608 95417240 134056472 0 0 0"
                 parts = mem_result.stdout.strip().split()
-                memory_info = {
-                    'total_mb': int(parts[0]),
-                    'used_mb': int(parts[1]),
-                    'free_mb': int(parts[2]),
-                    'percent': float(parts[3])
-                }
+                if len(parts) >= 4:
+                    total = int(parts[1])
+                    used = int(parts[2])
+                    free = int(parts[3])
+                    mem_percent = (used / total) * 100 if total > 0 else 0
+                    memory_info = {
+                        'total_mb': total // 1024 // 1024,  # Convert to MB
+                        'used_mb': used // 1024 // 1024,
+                        'free_mb': free // 1024 // 1024,
+                        'percent': mem_percent
+                    }
+                    print(f"Debug: Memory calculation: {mem_percent:.1f}%")
             
-            # Get disk usage
-            disk_cmd = f'{ssh_prefix} "df -h / | tail -1 | awk \\"{{print \\$2, \\$3, \\$4, \\$5}}\\""'
-            disk_result = subprocess.run(disk_cmd, shell=True, capture_output=True, text=True, timeout=10)
+            # Get disk usage - using shell=True
+            disk_cmd = f'{ssh_prefix} "df -h / | tail -1"'
+            print(f"Debug: Running disk command: {disk_cmd}")
+            disk_result = subprocess.run(disk_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+            print(f"Debug: Disk result stdout: '{disk_result.stdout.strip()}'")
+            print(f"Debug: Disk result stderr: '{disk_result.stderr.strip()}'")
             
             disk_info = {}
             if disk_result.stdout.strip():
                 parts = disk_result.stdout.strip().split()
-                disk_info = {
-                    'total': parts[0],
-                    'used': parts[1],
-                    'available': parts[2],
-                    'percent': int(parts[3].rstrip('%'))
-                }
+                if len(parts) >= 5:
+                    disk_info = {
+                        'total': parts[1],
+                        'used': parts[2],
+                        'available': parts[3],
+                        'percent': int(parts[4].rstrip('%')) if parts[4].endswith('%') else 0
+                    }
             
-            # Get load average
-            load_cmd = f'{ssh_prefix} "cat /proc/loadavg | awk \\"{{print \\$1}}\\""'
-            load_result = subprocess.run(load_cmd, shell=True, capture_output=True, text=True, timeout=10)
-            load_avg = float(load_result.stdout.strip()) if load_result.stdout.strip() else 0.0
+            # Get detailed disk information (partitions)
+            disk_partitions_cmd = f'{ssh_prefix} "df -h | grep -E \'^/dev/\' | head -5"'
+            disk_partitions_result = subprocess.run(disk_partitions_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+            
+            partitions = []
+            if disk_partitions_result.stdout.strip():
+                for line in disk_partitions_result.stdout.strip().split('\n'):
+                    if line.strip():
+                        parts = line.split()
+                        if len(parts) >= 6:
+                            partitions.append({
+                                'device': parts[0],
+                                'mountpoint': parts[5],
+                                'fstype': 'unknown',
+                                'usage': {
+                                    'total': parts[1],
+                                    'used': parts[2],
+                                    'available': parts[3],
+                                    'percent': int(parts[4].rstrip('%')) if parts[4].endswith('%') else 0
+                                }
+                            })
+            
+            # Get top processes
+            processes_cmd = f'{ssh_prefix} "ps aux --sort=-%cpu | head -11 | tail -10"'
+            processes_result = subprocess.run(processes_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+            
+            processes = []
+            if processes_result.stdout.strip():
+                for line in processes_result.stdout.strip().split('\n'):
+                    if line.strip():
+                        parts = line.split()
+                        if len(parts) >= 11:
+                            try:
+                                processes.append({
+                                    'pid': int(parts[1]),
+                                    'name': parts[10][:20],  # Truncate long process names
+                                    'cpu_percent': float(parts[2]),
+                                    'memory_percent': float(parts[3]),
+                                    'status': 'R'  # Assume running
+                                })
+                            except (ValueError, IndexError):
+                                continue
+            
+            # Get load average - using shell=True with simpler command
+            load_cmd = f'{ssh_prefix} "cat /proc/loadavg | awk \'{{print $1}}\'"'
+            load_result = subprocess.run(load_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+            print(f"Debug: Load result stdout: '{load_result.stdout.strip()}'")
+            print(f"Debug: Load result stderr: '{load_result.stderr.strip()}'")
+            # Extract just the first number from the loadavg output
+            load_output = load_result.stdout.strip()
+            if load_output:
+                load_parts = load_output.split()
+                load_avg = float(load_parts[0]) if load_parts else 0.0
+            else:
+                load_avg = 0.0
+            print(f"Debug: Load average: {load_avg}")
             
             return {
                 'cpu_percent': cpu_usage,
@@ -287,15 +377,20 @@ class ServerDiscovery:
                 'disk_percent': disk_info.get('percent', 0),
                 'load_avg': load_avg,
                 'memory_info': memory_info,
-                'disk_info': disk_info
+                'disk_info': disk_info,
+                'disk_partitions': partitions,
+                'processes': processes
             }
             
         except Exception as e:
+            print(f"Debug: Error in _get_system_info: {e}")
             return {
                 'cpu_percent': 0,
                 'memory_percent': 0,
                 'disk_percent': 0,
                 'load_avg': 0,
+                'disk_partitions': [],
+                'processes': [],
                 'error': str(e)
             }
     
