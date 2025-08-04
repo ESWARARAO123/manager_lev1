@@ -72,6 +72,7 @@ class DashboardData:
             self.data['network_info'] = self._get_network_info()
             self.data['disk_info'] = self._get_disk_info()
             self.data['alerts'] = self._get_alerts()
+            self.data['multi_server'] = self._get_multi_server_info()
             
             # Update charts data
             if self.charts:
@@ -302,6 +303,165 @@ class DashboardData:
             })
         
         return alerts
+    
+    def _get_multi_server_info(self):
+        """Get multi-server information"""
+        import subprocess
+        import time
+        
+        servers = {
+            "172.16.16.21": {
+                "name": "Local Server",
+                "type": "local"
+            },
+            "172.16.16.23": {
+                "name": "Remote Server", 
+                "type": "remote"
+            }
+        }
+        
+        server_status = {}
+        
+        for ip, config in servers.items():
+            if config['type'] == 'local':
+                # Local server - use psutil
+                try:
+                    import psutil
+                    server_status[ip] = {
+                        'name': config['name'],
+                        'ip': ip,
+                        'status': 'Online',
+                        'cpu_percent': psutil.cpu_percent(interval=0.1),
+                        'memory_percent': psutil.virtual_memory().percent,
+                        'disk_percent': psutil.disk_usage('/').percent,
+                        'load_avg': psutil.getloadavg()[0]
+                    }
+                except Exception as e:
+                    server_status[ip] = {
+                        'name': config['name'],
+                        'ip': ip,
+                        'status': 'Error',
+                        'error': str(e)
+                    }
+            else:
+                # Remote server - get detailed info via SSH (cached to avoid too many prompts)
+                current_time = time.time()
+                last_check = getattr(self, '_last_remote_check', 0)
+                
+                # Only check remote server every 60 seconds to reduce SSH prompts
+                if current_time - last_check > 60:
+                    try:
+                        # Get detailed remote server info
+                        remote_info = self._get_remote_server_details(ip)
+                        self._last_remote_check = current_time
+                        self._remote_cache = remote_info
+                    except Exception as e:
+                        self._last_remote_check = current_time
+                        self._remote_cache = {
+                            'name': config['name'],
+                            'ip': ip,
+                            'status': 'Offline',
+                            'error': str(e)
+                        }
+                
+                # Use cached status
+                server_status[ip] = getattr(self, '_remote_cache', {
+                    'name': config['name'],
+                    'ip': ip,
+                    'status': 'Unknown',
+                    'note': 'Loading...'
+                })
+        
+        return server_status
+    
+    def _get_remote_server_details(self, ip):
+        """Get detailed remote server information via SSH"""
+        try:
+            # Test SSH connectivity first
+            ssh_test = subprocess.run(
+                ['ssh', '-o', 'ConnectTimeout=3', '-o', 'BatchMode=yes', f'root@{ip}', 'echo "test"'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if ssh_test.returncode != 0:
+                # SSH not available, use ping only
+                ping_result = subprocess.run(
+                    ['ping', '-c', '1', '-W', '1', ip],
+                    capture_output=True,
+                    text=True,
+                    timeout=3
+                )
+                return {
+                    'name': 'Remote Server',
+                    'ip': ip,
+                    'status': 'Online' if ping_result.returncode == 0 else 'Offline',
+                    'note': 'SSH not available - use manual connection'
+                }
+            
+            # SSH available, get detailed info
+            # CPU usage
+            cpu_cmd = "top -bn1 | grep 'Cpu(s)' | awk '{print $2}' | cut -d'%' -f1"
+            cpu_result = subprocess.run(
+                ['ssh', f'root@{ip}', cpu_cmd],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            cpu_usage = float(cpu_result.stdout.strip()) if cpu_result.stdout.strip() else 0.0
+            
+            # Memory usage
+            mem_cmd = "free -m | grep '^Mem:' | awk '{print $2, $3, $4, $3/$2*100}'"
+            mem_result = subprocess.run(
+                ['ssh', f'root@{ip}', mem_cmd],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            memory_percent = 0.0
+            if mem_result.stdout.strip():
+                parts = mem_result.stdout.strip().split()
+                memory_percent = float(parts[3]) if len(parts) > 3 else 0.0
+            
+            # Disk usage
+            disk_cmd = "df -h / | tail -1 | awk '{print $5}' | cut -d'%' -f1"
+            disk_result = subprocess.run(
+                ['ssh', f'root@{ip}', disk_cmd],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            disk_percent = int(disk_result.stdout.strip()) if disk_result.stdout.strip() else 0
+            
+            # Load average
+            load_cmd = "cat /proc/loadavg | awk '{print $1}'"
+            load_result = subprocess.run(
+                ['ssh', f'root@{ip}', load_cmd],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            load_avg = float(load_result.stdout.strip()) if load_result.stdout.strip() else 0.0
+            
+            return {
+                'name': 'Remote Server',
+                'ip': ip,
+                'status': 'Online',
+                'cpu_percent': cpu_usage,
+                'memory_percent': memory_percent,
+                'disk_percent': disk_percent,
+                'load_avg': load_avg
+            }
+            
+        except Exception as e:
+            return {
+                'name': 'Remote Server',
+                'ip': ip,
+                'status': 'Error',
+                'error': str(e)
+            }
 
 class DashboardHandler(BaseHTTPRequestHandler):
     """HTTP request handler for the dashboard"""
@@ -411,6 +571,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         <header class="dashboard-header">
             <h1>🚀 RHEL Resource Manager - Live Dashboard</h1>
             <div class="header-info">
+                <div class="server-selector">
+                    <label for="server-select">Server:</label>
+                    <select id="server-select" onchange="changeServer()">
+                        <option value="172.16.16.21">Local Server (172.16.16.21)</option>
+                        <option value="172.16.16.23">Remote Server (172.16.16.23)</option>
+                    </select>
+                </div>
                 <span id="last-update">Last Update: Loading...</span>
                 <span id="status" class="status-indicator">🟢 Online</span>
             </div>
@@ -479,6 +646,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     <h3>Alerts</h3>
                     <div id="alerts-list"></div>
                 </div>
+                
+                <div class="info-card">
+                    <h3>Multi-Server Status</h3>
+                    <div id="multi-server-list"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -532,6 +704,39 @@ body {
     display: flex;
     gap: 20px;
     align-items: center;
+}
+
+.server-selector {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.server-selector label {
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.server-selector select {
+    padding: 8px 12px;
+    border: 2px solid #3498db;
+    border-radius: 6px;
+    background: white;
+    color: #2c3e50;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.server-selector select:hover {
+    border-color: #2980b9;
+    box-shadow: 0 2px 8px rgba(52, 152, 219, 0.2);
+}
+
+.server-selector select:focus {
+    outline: none;
+    border-color: #2980b9;
+    box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
 }
 
 .status-indicator {
@@ -701,6 +906,69 @@ body {
     color: #721c24;
 }
 
+.server-item {
+    border: 1px solid #ecf0f1;
+    border-radius: 8px;
+    margin: 10px 0;
+    padding: 15px;
+    background: #f8f9fa;
+}
+
+.server-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.server-name {
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.server-ip {
+    font-family: 'Courier New', monospace;
+    color: #7f8c8d;
+    font-size: 0.9rem;
+}
+
+.server-status {
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.9rem;
+}
+
+.server-status.online {
+    background: #d4edda;
+    color: #155724;
+}
+
+.server-status.offline {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.server-status.error {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.server-details {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+    gap: 10px;
+    font-size: 0.85rem;
+    color: #6c757d;
+}
+
+.server-note {
+    font-size: 0.85rem;
+    color: #6c757d;
+    font-style: italic;
+    margin-top: 5px;
+}
+
 @media (max-width: 768px) {
     .dashboard-header {
         flex-direction: column;
@@ -729,6 +997,7 @@ let chartData = {
     timestamps: []
 };
 let chartInitialized = false;
+let currentServer = '172.16.16.21'; // Default to local server
 
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', function() {
@@ -742,6 +1011,22 @@ document.addEventListener('DOMContentLoaded', function() {
         console.log('Chart initialized successfully');
     }, 1000);
 });
+
+// Server change function
+function changeServer() {
+    currentServer = document.getElementById('server-select').value;
+    console.log('Switched to server:', currentServer);
+    
+    // Clear chart data when switching servers
+    chartData = {
+        cpu: [],
+        memory: [],
+        timestamps: []
+    };
+    
+    // Update dashboard immediately
+    updateDashboard();
+}
 
 async function updateDashboard() {
     try {
@@ -758,9 +1043,8 @@ async function updateDashboard() {
         updateProcessList(data);
         updateNetworkInfo(data);
         updateAlerts(data);
-        if (chartInitialized) {
-            updateChart(data);
-        }
+        updateMultiServerStatus(data);
+        // Chart is now updated in updateStats function
         
         // Update timestamp
         document.getElementById('last-update').textContent = 
@@ -774,32 +1058,69 @@ async function updateDashboard() {
 }
 
 function updateStats(data) {
-    const resourceUsage = data.resource_usage || {};
-    const diskInfo = data.disk_info || {};
+    const multiServer = data.multi_server || {};
+    const selectedServer = multiServer[currentServer];
     
-    // CPU
-    const cpuPercent = resourceUsage.cpu_percent || 0;
-    document.getElementById('cpu-value').textContent = cpuPercent.toFixed(1) + '%';
-    document.getElementById('cpu-bar').style.width = cpuPercent + '%';
-    
-    // Memory
-    const memoryPercent = resourceUsage.memory_percent || 0;
-    document.getElementById('memory-value').textContent = memoryPercent.toFixed(1) + '%';
-    document.getElementById('memory-bar').style.width = memoryPercent + '%';
-    
-    // Disk
-    const diskPercent = diskInfo.root_usage?.percent || 0;
-    document.getElementById('disk-value').textContent = diskPercent.toFixed(1) + '%';
-    document.getElementById('disk-bar').style.width = diskPercent + '%';
-    
-    // Processes
-    const processCount = data.processes?.length || 0;
-    document.getElementById('process-value').textContent = processCount;
-    
-    // Update colors based on usage
-    updateStatColors('cpu', cpuPercent);
-    updateStatColors('memory', memoryPercent);
-    updateStatColors('disk', diskPercent);
+    if (selectedServer && selectedServer.status === 'Online') {
+        // Use selected server data
+        const cpuPercent = selectedServer.cpu_percent || 0;
+        const memoryPercent = selectedServer.memory_percent || 0;
+        const diskPercent = selectedServer.disk_percent || 0;
+        const loadAvg = selectedServer.load_avg || 0;
+        
+        // Update stats
+        document.getElementById('cpu-value').textContent = cpuPercent.toFixed(1) + '%';
+        document.getElementById('cpu-bar').style.width = cpuPercent + '%';
+        
+        document.getElementById('memory-value').textContent = memoryPercent.toFixed(1) + '%';
+        document.getElementById('memory-bar').style.width = memoryPercent + '%';
+        
+        document.getElementById('disk-value').textContent = diskPercent.toFixed(1) + '%';
+        document.getElementById('disk-bar').style.width = diskPercent + '%';
+        
+        // Update process count (use load average as approximation for remote server)
+        const processCount = currentServer === '172.16.16.21' ? (data.processes?.length || 0) : Math.round(loadAvg * 10);
+        document.getElementById('process-value').textContent = processCount;
+        
+        // Update colors based on usage
+        updateStatColors('cpu', cpuPercent);
+        updateStatColors('memory', memoryPercent);
+        updateStatColors('disk', diskPercent);
+        
+        // Update chart with selected server data
+        if (chartInitialized) {
+            updateChart({
+                resource_usage: {
+                    cpu_percent: cpuPercent,
+                    memory_percent: memoryPercent
+                }
+            });
+        }
+    } else {
+        // Fallback to local server data if selected server is not available
+        const resourceUsage = data.resource_usage || {};
+        const diskInfo = data.disk_info || {};
+        
+        const cpuPercent = resourceUsage.cpu_percent || 0;
+        const memoryPercent = resourceUsage.memory_percent || 0;
+        const diskPercent = diskInfo.root_usage?.percent || 0;
+        
+        document.getElementById('cpu-value').textContent = cpuPercent.toFixed(1) + '%';
+        document.getElementById('cpu-bar').style.width = cpuPercent + '%';
+        
+        document.getElementById('memory-value').textContent = memoryPercent.toFixed(1) + '%';
+        document.getElementById('memory-bar').style.width = memoryPercent + '%';
+        
+        document.getElementById('disk-value').textContent = diskPercent.toFixed(1) + '%';
+        document.getElementById('disk-bar').style.width = diskPercent + '%';
+        
+        const processCount = data.processes?.length || 0;
+        document.getElementById('process-value').textContent = processCount;
+        
+        updateStatColors('cpu', cpuPercent);
+        updateStatColors('memory', memoryPercent);
+        updateStatColors('disk', diskPercent);
+    }
 }
 
 function updateStatColors(type, percent) {
@@ -819,16 +1140,37 @@ function updateStatColors(type, percent) {
 }
 
 function updateSystemInfo(data) {
+    const multiServer = data.multi_server || {};
+    const selectedServer = multiServer[currentServer];
     const systemInfo = data.system_info || {};
     const container = document.getElementById('system-info');
     
-    const info = [
-        ['Hostname', systemInfo.hostname || 'N/A'],
-        ['Platform', systemInfo.platform || 'N/A'],
-        ['CPU Cores', systemInfo.cpu_count || 'N/A'],
-        ['Uptime', systemInfo.uptime || 'N/A'],
-        ['Load Average', systemInfo.load_avg ? systemInfo.load_avg.join(', ') : 'N/A']
-    ];
+    let info = [];
+    
+    if (currentServer === '172.16.16.21') {
+        // Local server - use system info
+        info = [
+            ['Hostname', systemInfo.hostname || 'N/A'],
+            ['Platform', systemInfo.platform || 'N/A'],
+            ['CPU Cores', systemInfo.cpu_count || 'N/A'],
+            ['Uptime', systemInfo.uptime || 'N/A'],
+            ['Load Average', systemInfo.load_avg ? systemInfo.load_avg.join(', ') : 'N/A']
+        ];
+    } else {
+        // Remote server - use server-specific info
+        const serverName = selectedServer?.name || 'Remote Server';
+        const serverIP = currentServer;
+        const serverStatus = selectedServer?.status || 'Unknown';
+        const loadAvg = selectedServer?.load_avg || 'N/A';
+        
+        info = [
+            ['Server Name', serverName],
+            ['IP Address', serverIP],
+            ['Status', serverStatus],
+            ['Load Average', loadAvg],
+            ['Connection', selectedServer?.note || 'SSH required for details']
+        ];
+    }
     
     container.innerHTML = info.map(([label, value]) => 
         `<div class="info-item">
@@ -839,18 +1181,57 @@ function updateSystemInfo(data) {
 }
 
 function updateProcessList(data) {
+    const multiServer = data.multi_server || {};
+    const selectedServer = multiServer[currentServer];
     const processes = data.processes || [];
     const container = document.getElementById('process-list');
     
-    container.innerHTML = processes.map(proc => 
-        `<div class="process-item">
-            <div class="process-name">${proc.name || 'Unknown'}</div>
-            <div class="process-stats">
-                <span>CPU: ${proc.cpu_percent?.toFixed(1) || 0}%</span>
-                <span>MEM: ${proc.memory_percent?.toFixed(1) || 0}%</span>
-            </div>
-        </div>`
-    ).join('');
+    if (currentServer === '172.16.16.21') {
+        // Local server - show process list
+        container.innerHTML = processes.map(proc => 
+            `<div class="process-item">
+                <div class="process-name">${proc.name || 'Unknown'}</div>
+                <div class="process-stats">
+                    <span>CPU: ${proc.cpu_percent?.toFixed(1) || 0}%</span>
+                    <span>MEM: ${proc.memory_percent?.toFixed(1) || 0}%</span>
+                </div>
+            </div>`
+        ).join('');
+    } else {
+        // Remote server - show server status info
+        if (selectedServer && selectedServer.status === 'Online') {
+            container.innerHTML = `
+                <div class="process-item">
+                    <div class="process-name">🟢 Server Online</div>
+                    <div class="process-stats">
+                        <span>CPU: ${selectedServer.cpu_percent?.toFixed(1) || 'N/A'}%</span>
+                        <span>MEM: ${selectedServer.memory_percent?.toFixed(1) || 'N/A'}%</span>
+                    </div>
+                </div>
+                <div class="process-item">
+                    <div class="process-name">💾 Disk Usage</div>
+                    <div class="process-stats">
+                        <span>Usage: ${selectedServer.disk_percent || 'N/A'}%</span>
+                    </div>
+                </div>
+                <div class="process-item">
+                    <div class="process-name">📊 Load Average</div>
+                    <div class="process-stats">
+                        <span>Load: ${selectedServer.load_avg?.toFixed(2) || 'N/A'}</span>
+                    </div>
+                </div>
+            `;
+        } else {
+            container.innerHTML = `
+                <div class="process-item">
+                    <div class="process-name">❌ Server Offline</div>
+                    <div class="process-stats">
+                        <span>Status: ${selectedServer?.status || 'Unknown'}</span>
+                    </div>
+                </div>
+            `;
+        }
+    }
 }
 
 function updateNetworkInfo(data) {
@@ -890,6 +1271,50 @@ function updateAlerts(data) {
             <strong>${alert.type.toUpperCase()}:</strong> ${alert.message}
         </div>`
     ).join('');
+}
+
+function updateMultiServerStatus(data) {
+    const multiServer = data.multi_server || {};
+    const container = document.getElementById('multi-server-list');
+    
+    if (Object.keys(multiServer).length === 0) {
+        container.innerHTML = '<div class="info-item">No server data available</div>';
+        return;
+    }
+    
+    container.innerHTML = Object.values(multiServer).map(server => {
+        const statusColor = server.status === 'Online' ? '🟢' : server.status === 'Offline' ? '🔴' : '🟡';
+        const statusText = server.status;
+        
+        let details = '';
+        if (server.cpu_percent !== null && server.cpu_percent !== undefined) {
+            details = `
+                <div class="server-details">
+                    <span>CPU: ${server.cpu_percent?.toFixed(1) || 'N/A'}%</span>
+                    <span>Memory: ${server.memory_percent?.toFixed(1) || 'N/A'}%</span>
+                    <span>Disk: ${server.disk_percent || 'N/A'}%</span>
+                    <span>Load: ${server.load_avg?.toFixed(2) || 'N/A'}</span>
+                </div>
+            `;
+        } else if (server.note) {
+            details = `
+                <div class="server-note">
+                    <span>💡 ${server.note}</span>
+                </div>
+            `;
+        }
+        
+        return `
+            <div class="server-item">
+                <div class="server-header">
+                    <span class="server-name">${server.name}</span>
+                    <span class="server-ip">${server.ip}</span>
+                    <span class="server-status ${server.status.toLowerCase()}">${statusColor} ${statusText}</span>
+                </div>
+                ${details}
+            </div>
+        `;
+    }).join('');
 }
 
 function formatBytes(bytes) {
@@ -1030,9 +1455,11 @@ function updateChart(data) {
     const currentCPU = chartData.cpu[chartData.cpu.length - 1] || 0;
     const currentMemory = chartData.memory[chartData.memory.length - 1] || 0;
     
+    const serverName = currentServer === '172.16.16.21' ? 'Local Server' : 'Remote Server';
+    
     const layout = {
         title: {
-            text: `Resource Usage Over Time (CPU: ${currentCPU.toFixed(1)}% | Memory: ${currentMemory.toFixed(1)}%)`,
+            text: `${serverName} - Resource Usage Over Time (CPU: ${currentCPU.toFixed(1)}% | Memory: ${currentMemory.toFixed(1)}%)`,
             font: { size: 16, color: '#2c3e50' }
         },
         xaxis: { 

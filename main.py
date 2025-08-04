@@ -8,6 +8,8 @@ import sys
 import argparse
 import json
 import logging
+import time
+from datetime import datetime
 from typing import Dict, Any
 
 # Configure logging first
@@ -247,6 +249,296 @@ class RHELResourceManager:
             
         except Exception as e:
             logger.error(f"Error generating charts: {e}")
+    
+    def discover_network(self, network_range: str, username: str, password: str = None):
+        """Discover servers in the network"""
+        try:
+            from core.network_discovery import NetworkDiscovery
+        except ImportError:
+            logger.error("NetworkDiscovery module not available")
+            print("NetworkDiscovery module not available. Install paramiko: pip install paramiko")
+            return
+        
+        try:
+            discovery = NetworkDiscovery()
+            discovery.set_credentials(username, password)
+            
+            print(f"🔍 Discovering servers in network range: {network_range}")
+            discovered = discovery.discover_network(network_range)
+            
+            if discovered:
+                print(f"✅ Found {len(discovered)} servers:")
+                for ip in discovered:
+                    print(f"   📡 {ip}")
+            else:
+                print("❌ No servers discovered")
+                
+        except Exception as e:
+            logger.error(f"Error discovering network: {e}")
+            print(f"Error: {e}")
+    
+    def check_network_access(self, username: str, password: str = None):
+        """Check SSH accessibility of discovered servers"""
+        try:
+            from core.network_discovery import NetworkDiscovery
+        except ImportError:
+            logger.error("NetworkDiscovery module not available")
+            print("NetworkDiscovery module not available. Install paramiko: pip install paramiko")
+            return
+        
+        try:
+            discovery = NetworkDiscovery()
+            discovery.set_credentials(username, password)
+            
+            # First discover servers if not already done
+            if not discovery.discovered_servers:
+                print("No servers discovered. Running discovery first...")
+                discovery.discover_network("192.168.2.0/24")
+            
+            print("🔐 Checking SSH accessibility...")
+            accessible = discovery.check_server_accessibility()
+            
+            if accessible:
+                print(f"✅ {len(accessible)} servers are accessible:")
+                for ip, info in accessible.items():
+                    status = "✅" if info['accessible'] else "❌"
+                    error = f" ({info['error']})" if info.get('error') else ""
+                    print(f"   {status} {ip}{error}")
+                    if info.get('system_info'):
+                        print(f"      System: {info['system_info']}")
+            else:
+                print("❌ No servers are accessible")
+                
+        except Exception as e:
+            logger.error(f"Error checking network access: {e}")
+            print(f"Error: {e}")
+    
+    def monitor_multiple_servers(self):
+        """Monitor multiple servers"""
+        try:
+            from core.network_discovery import NetworkDiscovery
+        except ImportError:
+            logger.error("NetworkDiscovery module not available")
+            print("NetworkDiscovery module not available. Install paramiko: pip install paramiko")
+            return
+        
+        try:
+            discovery = NetworkDiscovery()
+            
+            if not discovery.accessible_servers:
+                print("No accessible servers found. Run discovery and accessibility check first.")
+                return
+            
+            print(f"📊 Starting monitoring of {len(discovery.accessible_servers)} servers")
+            discovery.start_monitoring(interval=30)
+            
+            try:
+                while True:
+                    status_data = discovery.get_all_servers_status()
+                    print(f"\n📊 Server Status - {datetime.now().strftime('%H:%M:%S')}")
+                    print("-" * 60)
+                    
+                    for ip, status in status_data.get('server_status', {}).items():
+                        cpu = status.get('cpu_usage', 0)
+                        memory = status.get('memory_usage', {}).get('percent', 0)
+                        print(f"{ip}: CPU {cpu:.1f}%, Memory {memory:.1f}%")
+                    
+                    time.sleep(30)
+                    
+            except KeyboardInterrupt:
+                print("\n🛑 Monitoring stopped")
+                discovery.stop_monitoring()
+                
+        except Exception as e:
+            logger.error(f"Error monitoring servers: {e}")
+            print(f"Error: {e}")
+    
+    def run_multi_server_gui(self):
+        """Run multi-server GUI dashboard"""
+        try:
+            from gui.multi_server_dashboard import MultiServerDashboard
+            import tkinter as tk
+            
+            root = tk.Tk()
+            app = MultiServerDashboard(root)
+            root.mainloop()
+            
+        except ImportError as e:
+            logger.error(f"Multi-server GUI not available: {e}")
+            print("Multi-server GUI not available")
+        except Exception as e:
+            logger.error(f"Error launching multi-server GUI: {e}")
+            print(f"Error: {e}")
+    
+    def test_specific_servers(self):
+        """Test connectivity to specific servers (172.16.16.21 and 172.16.16.23)"""
+        import subprocess
+        import time
+        
+        print("🔍 Testing Server Connectivity")
+        print("=" * 50)
+        print(f"Test started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print()
+        
+        servers = {
+            "172.16.16.21": "Local Server (Current)",
+            "172.16.16.23": "Remote Server"
+        }
+        
+        results = {}
+        
+        for ip, name in servers.items():
+            print(f"📡 Testing {name} ({ip})...")
+            
+            # Test ping
+            try:
+                ping_result = subprocess.run(
+                    ['ping', '-c', '1', '-W', '2', ip],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                ping_ok = ping_result.returncode == 0
+                print(f"   Ping: {'✅' if ping_ok else '❌'}")
+            except:
+                ping_ok = False
+                print(f"   Ping: ❌")
+            
+            # Test SSH
+            try:
+                ssh_result = subprocess.run(
+                    ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes', f'root@{ip}', 'echo "SSH test successful"'],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                ssh_ok = ssh_result.returncode == 0
+                print(f"   SSH: {'✅' if ssh_ok else '❌'}")
+            except:
+                ssh_ok = False
+                print(f"   SSH: ❌")
+            
+            results[ip] = {
+                'name': name,
+                'ping': ping_ok,
+                'ssh': ssh_ok
+            }
+            
+            # Get system information if SSH is available
+            if ssh_ok:
+                print(f"   📊 Getting system information...")
+                try:
+                    if ip == "172.16.16.21":
+                        # Local server - use psutil
+                        import psutil
+                        info = {
+                            'cpu_percent': psutil.cpu_percent(interval=1),
+                            'memory_percent': psutil.virtual_memory().percent,
+                            'disk_percent': psutil.disk_usage('/').percent,
+                            'load_avg': psutil.getloadavg(),
+                            'uptime': time.time() - psutil.boot_time()
+                        }
+                    else:
+                        # Remote server - use SSH commands
+                        # Get CPU usage
+                        cpu_cmd = "top -bn1 | grep 'Cpu(s)' | awk '{print $2}' | cut -d'%' -f1"
+                        cpu_result = subprocess.run(
+                            ['ssh', f'root@{ip}', cpu_cmd],
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+                        cpu_usage = float(cpu_result.stdout.strip()) if cpu_result.stdout.strip() else 0.0
+                        
+                        # Get memory usage
+                        mem_cmd = "free -m | grep '^Mem:' | awk '{print $3/$2*100}'"
+                        mem_result = subprocess.run(
+                            ['ssh', f'root@{ip}', mem_cmd],
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+                        memory_percent = float(mem_result.stdout.strip()) if mem_result.stdout.strip() else 0.0
+                        
+                        # Get disk usage
+                        disk_cmd = "df -h / | tail -1 | awk '{print $5}' | cut -d'%' -f1"
+                        disk_result = subprocess.run(
+                            ['ssh', f'root@{ip}', disk_cmd],
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+                        disk_percent = int(disk_result.stdout.strip()) if disk_result.stdout.strip() else 0
+                        
+                        # Get load average
+                        load_cmd = "cat /proc/loadavg | awk '{print $1}'"
+                        load_result = subprocess.run(
+                            ['ssh', f'root@{ip}', load_cmd],
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+                        load_avg = float(load_result.stdout.strip()) if load_result.stdout.strip() else 0.0
+                        
+                        info = {
+                            'cpu_percent': cpu_usage,
+                            'memory_percent': memory_percent,
+                            'disk_percent': disk_percent,
+                            'load_avg': [load_avg, 0.0, 0.0],
+                            'uptime': 0  # Could add uptime command if needed
+                        }
+                    
+                    results[ip]['info'] = info
+                    print(f"   ✅ System info retrieved successfully")
+                    
+                except Exception as e:
+                    print(f"   ❌ Error getting system info: {e}")
+                    results[ip]['info'] = None
+            
+            print()
+        
+        # Display results
+        print("📊 Test Results Summary")
+        print("=" * 50)
+        
+        for ip, result in results.items():
+            print(f"\n🏠 {result['name']} ({ip})")
+            print(f"   Ping: {'✅' if result['ping'] else '❌'}")
+            print(f"   SSH: {'✅' if result['ssh'] else '❌'}")
+            
+            if result.get('info'):
+                info = result['info']
+                print(f"   📈 System Status:")
+                print(f"      CPU: {info['cpu_percent']:.1f}%")
+                print(f"      Memory: {info['memory_percent']:.1f}%")
+                print(f"      Disk: {info['disk_percent']}%")
+                print(f"      Load: {info['load_avg'][0]:.2f}")
+        
+        print("\n" + "=" * 50)
+        
+        # Summary
+        accessible_servers = [ip for ip, result in results.items() if result['ssh']]
+        print(f"✅ Accessible servers: {len(accessible_servers)}")
+        for ip in accessible_servers:
+            print(f"   - {ip} ({results[ip]['name']})")
+        
+        if len(accessible_servers) > 0:
+            print(f"\n🚀 Ready for multi-server monitoring!")
+            print(f"Use: python3 main.py --multi-server-gui")
+            print(f"Or: python3 main.py --multi-monitor")
+            print(f"Or: python3 main.py --quick-status (no SSH prompts)")
+    
+    def run_quick_status(self):
+        """Run quick status check without SSH prompts"""
+        try:
+            from quick_status import main as quick_status_main
+            quick_status_main()
+        except ImportError:
+            print("Quick status module not available")
+            print("Use: python3 quick_status.py")
+        except Exception as e:
+            logger.error(f"Error running quick status: {e}")
+            print(f"Error: {e}")
 
 def main():
     """Main entry point"""
@@ -300,6 +592,17 @@ Examples:
     parser.add_argument('--chart-type', choices=['all', 'architecture', 'resource', 'monitoring'], 
                        default='all', help='Type of charts to generate')
     
+    # Network discovery options
+    parser.add_argument('--discover-network', action='store_true', help='Discover servers in network')
+    parser.add_argument('--network-range', default='172.16.16.0/24', help='Network range to scan')
+    parser.add_argument('--ssh-username', help='SSH username for server access')
+    parser.add_argument('--ssh-password', help='SSH password for server access')
+    parser.add_argument('--check-access', action='store_true', help='Check SSH accessibility of discovered servers')
+    parser.add_argument('--multi-monitor', action='store_true', help='Monitor multiple servers')
+    parser.add_argument('--multi-server-gui', action='store_true', help='Launch multi-server GUI dashboard')
+    parser.add_argument('--test-servers', action='store_true', help='Test connectivity to 172.16.16.21 and 172.16.16.23')
+    parser.add_argument('--quick-status', action='store_true', help='Show quick status of both servers (no SSH prompts)')
+    
     args = parser.parse_args()
     
     # Initialize the main application
@@ -321,6 +624,18 @@ Examples:
             app.generate_data(args.data_type)
         elif args.generate_charts:
             app.generate_charts(args.chart_type)
+        elif args.discover_network:
+            app.discover_network(args.network_range, args.ssh_username, args.ssh_password)
+        elif args.check_access:
+            app.check_network_access(args.ssh_username, args.ssh_password)
+        elif args.multi_monitor:
+            app.monitor_multiple_servers()
+        elif args.multi_server_gui:
+            app.run_multi_server_gui()
+        elif args.test_servers:
+            app.test_specific_servers()
+        elif args.quick_status:
+            app.run_quick_status()
         elif args.cli or args.status or args.monitor or args.create_group:
             app.run_cli(args)
         else:
