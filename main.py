@@ -371,7 +371,7 @@ class RHELResourceManager:
             print(f"Error: {e}")
     
     def test_specific_servers(self):
-        """Test connectivity to specific servers (172.16.16.21 and 172.16.16.23)"""
+        """Test connectivity to local server and discover remote servers"""
         import subprocess
         import time
         
@@ -380,10 +380,29 @@ class RHELResourceManager:
         print(f"Test started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print()
         
+        # Get local server info
+        from utils.network_utils import get_local_ip, get_hostname, get_network_ranges, discover_servers_in_network
+        
+        local_ip = get_local_ip()
+        hostname = get_hostname()
+        
         servers = {
-            "172.16.16.21": "Local Server (Current)",
-            "172.16.16.23": "Remote Server"
+            local_ip: f"Local Server ({hostname})"
         }
+        
+        # Discover servers in network
+        print("🔍 Discovering servers in network...")
+        network_ranges = get_network_ranges()
+        discovered_servers = []
+        
+        for network_range in network_ranges[:2]:  # Limit to first 2 ranges for speed
+            print(f"📡 Scanning {network_range}...")
+            servers_in_range = discover_servers_in_network(network_range)
+            discovered_servers.extend(servers_in_range)
+        
+        # Add discovered servers to the list
+        for i, server_ip in enumerate(discovered_servers[:5]):  # Limit to first 5
+            servers[server_ip] = f"Discovered Server {i+1}"
         
         results = {}
         
@@ -428,7 +447,9 @@ class RHELResourceManager:
             if ssh_ok:
                 print(f"   📊 Getting system information...")
                 try:
-                    if ip == "172.16.16.21":
+                    from utils.network_utils import is_local_server
+                    
+                    if is_local_server(ip):
                         # Local server - use psutil
                         import psutil
                         info = {
@@ -600,7 +621,7 @@ Examples:
     parser.add_argument('--check-access', action='store_true', help='Check SSH accessibility of discovered servers')
     parser.add_argument('--multi-monitor', action='store_true', help='Monitor multiple servers')
     parser.add_argument('--multi-server-gui', action='store_true', help='Launch multi-server GUI dashboard')
-    parser.add_argument('--test-servers', action='store_true', help='Test connectivity to 172.16.16.21 and 172.16.16.23')
+    parser.add_argument('--test-servers', action='store_true', help='Test connectivity to local server and discover remote servers')
     parser.add_argument('--quick-status', action='store_true', help='Show quick status of both servers (no SSH prompts)')
     
     args = parser.parse_args()

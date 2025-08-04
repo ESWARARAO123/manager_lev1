@@ -44,13 +44,18 @@ def get_local_system_info():
     """Get system information for local server"""
     try:
         import psutil
+        from utils.network_utils import get_local_ip, get_hostname
+        
+        local_ip = get_local_ip()
+        hostname = get_hostname()
         
         info = {
-            'hostname': psutil.gethostname(),
+            'ip': local_ip,
+            'hostname': hostname,
             'cpu_percent': psutil.cpu_percent(interval=1),
             'memory': psutil.virtual_memory()._asdict(),
             'disk': psutil.disk_usage('/')._asdict(),
-            'load_avg': psutil.getloadavg(),
+            'load_avg': psutil.getloadavg() if hasattr(psutil, 'getloadavg') else [0.0, 0.0, 0.0],
             'uptime': time.time() - psutil.boot_time()
         }
         return info
@@ -150,10 +155,29 @@ def main():
     print(f"Test started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
     
+    # Get local server info
+    from utils.network_utils import get_local_ip, get_hostname, get_network_ranges, discover_servers_in_network
+    
+    local_ip = get_local_ip()
+    hostname = get_hostname()
+    
     servers = {
-        "172.16.16.21": "Local Server",
-        "172.16.16.23": "Remote Server"
+        local_ip: f"Local Server ({hostname})"
     }
+    
+    # Discover remote servers
+    print("🔍 Discovering servers in network...")
+    network_ranges = get_network_ranges()
+    discovered_servers = []
+    
+    for network_range in network_ranges[:2]:  # Limit to first 2 ranges
+        print(f"📡 Scanning {network_range}...")
+        servers_in_range = discover_servers_in_network(network_range)
+        discovered_servers.extend(servers_in_range)
+    
+    # Add discovered servers to the list
+    for i, server_ip in enumerate(discovered_servers[:3]):  # Limit to first 3
+        servers[server_ip] = f"Discovered Server {i+1}"
     
     results = {}
     
@@ -178,7 +202,9 @@ def main():
         # Get system information if SSH is available
         if ssh_ok:
             print(f"   📊 Getting system information...")
-            if ip == "172.16.16.21":
+            from utils.network_utils import is_local_server
+            
+            if is_local_server(ip):
                 info = get_local_system_info()
             else:
                 info = get_remote_system_info(ip)

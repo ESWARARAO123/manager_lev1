@@ -12,9 +12,14 @@ from datetime import datetime
 def get_local_status():
     """Get local server status"""
     try:
+        from utils.network_utils import get_local_ip, get_hostname
+        
+        local_ip = get_local_ip()
+        hostname = get_hostname()
+        
         return {
-            'name': 'Local Server',
-            'ip': '172.16.16.21',
+            'name': f'Local Server ({hostname})',
+            'ip': local_ip,
             'status': 'Online',
             'cpu_percent': psutil.cpu_percent(interval=0.1),
             'memory_percent': psutil.virtual_memory().percent,
@@ -22,35 +27,27 @@ def get_local_status():
             'load_avg': psutil.getloadavg()[0]
         }
     except Exception as e:
+        from utils.network_utils import get_local_ip, get_hostname
+        local_ip = get_local_ip()
+        hostname = get_hostname()
+        
         return {
-            'name': 'Local Server',
-            'ip': '172.16.16.21',
+            'name': f'Local Server ({hostname})',
+            'ip': local_ip,
             'status': 'Error',
             'error': str(e)
         }
 
 def get_remote_status():
     """Get remote server status using ping only"""
-    try:
-        result = subprocess.run(
-            ['ping', '-c', '1', '-W', '1', '172.16.16.23'],
-            capture_output=True,
-            text=True,
-            timeout=3
-        )
-        return {
-            'name': 'Remote Server',
-            'ip': '172.16.16.23',
-            'status': 'Online' if result.returncode == 0 else 'Offline',
-            'note': 'Use SSH for detailed monitoring'
-        }
-    except Exception as e:
-        return {
-            'name': 'Remote Server',
-            'ip': '172.16.16.23',
-            'status': 'Offline',
-            'error': str(e)
-        }
+    # This function is now deprecated since we use dynamic discovery
+    # Return a placeholder that indicates no remote server is configured
+    return {
+        'name': 'Remote Server',
+        'ip': 'Not configured',
+        'status': 'Not configured',
+        'note': 'Use server discovery to find and connect to remote servers'
+    }
 
 def display_status():
     """Display current status of both servers"""
@@ -81,7 +78,7 @@ def display_status():
     print(f"{remote['name']:<20} {remote['ip']:<15} {'N/A':<8} {'N/A':<10} {'N/A':<8} {'N/A':<8} {status_text:<10}")
     
     print("-" * 80)
-    print("💡 For detailed remote monitoring: python3 check_remote_server.py")
+    print("💡 For detailed remote monitoring: Use the web dashboard with server discovery")
 
 def main():
     """Main function"""

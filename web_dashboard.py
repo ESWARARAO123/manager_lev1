@@ -38,6 +38,20 @@ class DashboardData:
         except Exception as e:
             print(f"Warning: Could not initialize charts: {e}")
             self.charts = None
+        
+        # Initialize server discovery
+        try:
+            from core.server_discovery import ServerDiscovery
+            self.server_discovery = ServerDiscovery()
+            self.server_discovery.load_configuration()  # Load existing configuration
+            print("✅ Server discovery initialized")
+        except ImportError as e:
+            print(f"Warning: Server discovery module not available: {e}")
+            self.server_discovery = None
+        except Exception as e:
+            print(f"Warning: Could not initialize server discovery: {e}")
+            self.server_discovery = None
+        
         self.data = {}
         self.update_interval = 5  # seconds
         self.running = False
@@ -115,7 +129,11 @@ class DashboardData:
             uptime_str = str(uptime).split('.')[0]  # Remove microseconds
             
             # Get load average
-            load_avg = psutil.getloadavg()
+            try:
+                load_avg = psutil.getloadavg()
+            except (AttributeError, OSError):
+                # Fallback for systems without getloadavg
+                load_avg = [0.0, 0.0, 0.0]
             
             return {
                 'hostname': hostname,
@@ -306,71 +324,56 @@ class DashboardData:
     
     def _get_multi_server_info(self):
         """Get multi-server information"""
-        import subprocess
-        import time
-        
-        servers = {
-            "172.16.16.21": {
-                "name": "Local Server",
-                "type": "local"
-            },
-            "172.16.16.23": {
-                "name": "Remote Server", 
-                "type": "remote"
-            }
-        }
-        
         server_status = {}
         
-        for ip, config in servers.items():
-            if config['type'] == 'local':
-                # Local server - use psutil
-                try:
-                    import psutil
-                    server_status[ip] = {
-                        'name': config['name'],
-                        'ip': ip,
-                        'status': 'Online',
-                        'cpu_percent': psutil.cpu_percent(interval=0.1),
-                        'memory_percent': psutil.virtual_memory().percent,
-                        'disk_percent': psutil.disk_usage('/').percent,
-                        'load_avg': psutil.getloadavg()[0]
-                    }
-                except Exception as e:
-                    server_status[ip] = {
-                        'name': config['name'],
-                        'ip': ip,
-                        'status': 'Error',
-                        'error': str(e)
-                    }
-            else:
-                # Remote server - get detailed info via SSH (cached to avoid too many prompts)
-                current_time = time.time()
-                last_check = getattr(self, '_last_remote_check', 0)
-                
-                # Only check remote server every 60 seconds to reduce SSH prompts
-                if current_time - last_check > 60:
-                    try:
-                        # Get detailed remote server info
-                        remote_info = self._get_remote_server_details(ip)
-                        self._last_remote_check = current_time
-                        self._remote_cache = remote_info
-                    except Exception as e:
-                        self._last_remote_check = current_time
-                        self._remote_cache = {
-                            'name': config['name'],
+        # Local server (always available)
+        try:
+            import psutil
+            from utils.network_utils import get_local_ip, get_hostname
+            
+            local_ip = get_local_ip()
+            hostname = get_hostname()
+            
+            server_status[local_ip] = {
+                'name': f'Local Server ({hostname})',
+                'ip': local_ip,
+                'status': 'Online',
+                'cpu_percent': psutil.cpu_percent(interval=0.1),
+                'memory_percent': psutil.virtual_memory().percent,
+                'disk_percent': psutil.disk_usage('/').percent,
+                'load_avg': psutil.getloadavg()[0] if hasattr(psutil, 'getloadavg') else 0.0
+            }
+        except Exception as e:
+            from utils.network_utils import get_local_ip, get_hostname
+            local_ip = get_local_ip()
+            hostname = get_hostname()
+            
+            server_status[local_ip] = {
+                'name': f'Local Server ({hostname})',
+                'ip': local_ip,
+                'status': 'Error',
+                'error': str(e)
+            }
+        
+        # Connected servers from server discovery
+        if self.server_discovery:
+            try:
+                connected_servers = self.server_discovery.get_connected_servers_info()
+                for ip, server_info in connected_servers.items():
+                    if server_info.get('ssh_connected'):
+                        # Format the data to match the expected structure
+                        system_info = server_info.get('system_info', {})
+                        server_status[ip] = {
+                            'name': server_info.get('name', ip),
                             'ip': ip,
-                            'status': 'Offline',
-                            'error': str(e)
+                            'status': 'Online',
+                            'cpu_percent': system_info.get('cpu_percent', 0),
+                            'memory_percent': system_info.get('memory_percent', 0),
+                            'disk_percent': system_info.get('disk_percent', 0),
+                            'load_avg': system_info.get('load_avg', 0)
                         }
-                
-                # Use cached status
-                server_status[ip] = getattr(self, '_remote_cache', {
-                    'name': config['name'],
-                    'ip': ip,
-                    'status': 'Unknown',
-                    'note': 'Loading...'
-                })
+            except Exception as e:
+                print(f"Error getting connected servers info: {e}")
         
         return server_status
     
@@ -481,8 +484,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json_data()
         elif path == '/api/charts':
             self.send_chart_data()
+        elif path == '/api/server-status':
+            self.send_server_status()
+        elif path == '/api/local-ip':
+            self.send_local_ip()
         elif path.startswith('/static/'):
             self.send_static_file(path[8:])  # Remove '/static/' prefix
+        else:
+            self.send_error(404, "Not Found")
+    
+    def do_POST(self):
+        """Handle POST requests"""
+        parsed_path = urllib.parse.urlparse(self.path)
+        path = parsed_path.path
+        
+        if path == '/api/scan-network':
+            self.handle_scan_network()
+        elif path == '/api/stop-scan':
+            self.handle_stop_scan()
+        elif path == '/api/connect-server':
+            self.handle_connect_server()
+        elif path == '/api/disconnect-server':
+            self.handle_disconnect_server()
+        elif path == '/api/save-config':
+            self.handle_save_config()
+        elif path == '/api/load-config':
+            self.handle_load_config()
         else:
             self.send_error(404, "Not Found")
     
@@ -554,6 +581,259 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_error(500, str(e))
     
+    def send_server_status(self):
+        """Send server discovery status"""
+        try:
+            if self.dashboard_data and self.dashboard_data.server_discovery:
+                status = self.dashboard_data.server_discovery.get_status_summary()
+                connected_servers = self.dashboard_data.server_discovery.connected_servers
+                discovered_servers = self.dashboard_data.server_discovery.discovered_servers
+                
+                response = {
+                    'success': True,
+                    'status': status,
+                    'connected_servers': connected_servers,
+                    'discovered_servers': discovered_servers
+                }
+            else:
+                response = {
+                    'success': False,
+                    'error': 'Server discovery not available'
+                }
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(response, default=str).encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error(500, str(e))
+    
+    def send_local_ip(self):
+        """Send local IP address"""
+        try:
+            from utils.network_utils import get_local_ip, get_hostname
+            
+            response = {
+                'success': True,
+                'local_ip': get_local_ip(),
+                'hostname': get_hostname()
+            }
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error(500, str(e))
+    
+    def handle_scan_network(self):
+        """Handle network scanning request"""
+        try:
+            # Parse request body
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length > 0:
+                post_data = self.rfile.read(content_length)
+                request_data = json.loads(post_data.decode('utf-8'))
+                network_range = request_data.get('network_range', '172.16.16')
+                username = request_data.get('username', 'root')
+            else:
+                network_range = '172.16.16'
+                username = 'root'
+            
+            # Use the new network scanner
+            try:
+                from utils.network_scanner import NetworkScanner
+                
+                # Start scanning in a separate thread to avoid blocking
+                import threading
+                
+                def scan_thread():
+                    try:
+                        scanner = NetworkScanner()
+                        discovered = scanner.scan_network(network_range, username)
+                        print(f"Network scan completed. Found {len(discovered)} SSH-accessible servers.")
+                        
+                        # Update server discovery with results
+                        if self.dashboard_data and self.dashboard_data.server_discovery:
+                            for server in discovered:
+                                self.dashboard_data.server_discovery.discovered_servers[server['ip']] = {
+                                    'status': 'discovered',
+                                    'ssh_connected': False,
+                                    'info': server,
+                                    'discovered_at': server['discovered_at']
+                                }
+                    except Exception as e:
+                        print(f"Error during network scan: {e}")
+                
+                thread = threading.Thread(target=scan_thread, daemon=True)
+                thread.start()
+                
+                response = {
+                    'success': True,
+                    'message': f'Network scan started for {network_range}.x with username {username}',
+                    'discovered_count': len(self.dashboard_data.server_discovery.discovered_servers) if self.dashboard_data and self.dashboard_data.server_discovery else 0,
+                    'discovered_servers': self.dashboard_data.server_discovery.discovered_servers if self.dashboard_data and self.dashboard_data.server_discovery else {}
+                }
+            except ImportError:
+                # Fallback to old method
+                if self.dashboard_data and self.dashboard_data.server_discovery:
+                    import threading
+                    
+                    def scan_thread():
+                        try:
+                            discovered = self.dashboard_data.server_discovery.scan_network()
+                            print(f"Network scan completed. Found {len(discovered)} servers.")
+                        except Exception as e:
+                            print(f"Error during network scan: {e}")
+                    
+                    thread = threading.Thread(target=scan_thread, daemon=True)
+                    thread.start()
+                    
+                    response = {
+                        'success': True,
+                        'message': 'Network scan started (fallback method)',
+                        'discovered_count': len(self.dashboard_data.server_discovery.discovered_servers),
+                        'discovered_servers': self.dashboard_data.server_discovery.discovered_servers
+                    }
+                else:
+                    response = {
+                        'success': False,
+                        'error': 'Server discovery not available'
+                    }
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(response, default=str).encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error(500, str(e))
+    
+    def handle_stop_scan(self):
+        """Handle stop scanning request"""
+        try:
+            if self.dashboard_data and self.dashboard_data.server_discovery:
+                self.dashboard_data.server_discovery.stop_scanning()
+                response = {'success': True, 'message': 'Scan stopped'}
+            else:
+                response = {'success': False, 'error': 'Server discovery not available'}
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error(500, str(e))
+    
+    def handle_connect_server(self):
+        """Handle server connection request"""
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            request_data = json.loads(post_data.decode('utf-8'))
+            
+            ip = request_data.get('ip')
+            username = request_data.get('username', 'root')
+            password = request_data.get('password', '')
+            
+            if not ip:
+                response = {'success': False, 'error': 'IP address is required'}
+            elif self.dashboard_data and self.dashboard_data.server_discovery:
+                success = self.dashboard_data.server_discovery.connect_to_server(ip, username, password)
+                response = {
+                    'success': success,
+                    'message': f"Connection {'successful' if success else 'failed'} to {ip}"
+                }
+            else:
+                response = {'success': False, 'error': 'Server discovery not available'}
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error(500, str(e))
+    
+    def handle_disconnect_server(self):
+        """Handle server disconnection request"""
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            request_data = json.loads(post_data.decode('utf-8'))
+            
+            ip = request_data.get('ip')
+            
+            if not ip:
+                response = {'success': False, 'error': 'IP address is required'}
+            elif self.dashboard_data and self.dashboard_data.server_discovery:
+                success = self.dashboard_data.server_discovery.disconnect_from_server(ip)
+                response = {
+                    'success': success,
+                    'message': f"Disconnection {'successful' if success else 'failed'} from {ip}"
+                }
+            else:
+                response = {'success': False, 'error': 'Server discovery not available'}
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error(500, str(e))
+    
+    def handle_save_config(self):
+        """Handle save configuration request"""
+        try:
+            if self.dashboard_data and self.dashboard_data.server_discovery:
+                success = self.dashboard_data.server_discovery.save_configuration()
+                response = {
+                    'success': success,
+                    'message': 'Configuration saved successfully' if success else 'Failed to save configuration'
+                }
+            else:
+                response = {'success': False, 'error': 'Server discovery not available'}
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error(500, str(e))
+    
+    def handle_load_config(self):
+        """Handle load configuration request"""
+        try:
+            if self.dashboard_data and self.dashboard_data.server_discovery:
+                success = self.dashboard_data.server_discovery.load_configuration()
+                response = {
+                    'success': success,
+                    'message': 'Configuration loaded successfully' if success else 'Failed to load configuration'
+                }
+            else:
+                response = {'success': False, 'error': 'Server discovery not available'}
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode('utf-8'))
+            
+        except Exception as e:
+            self.send_error(500, str(e))
+    
     def _get_dashboard_html(self):
         """Generate the main dashboard HTML"""
         return f"""
@@ -574,12 +854,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 <div class="server-selector">
                     <label for="server-select">Server:</label>
                     <select id="server-select" onchange="changeServer()">
-                        <option value="172.16.16.21">Local Server (172.16.16.21)</option>
-                        <option value="172.16.16.23">Remote Server (172.16.16.23)</option>
+                        <option value="LOCAL_IP">Local Server (LOCAL_IP)</option>
                     </select>
                 </div>
                 <span id="last-update">Last Update: Loading...</span>
                 <span id="status" class="status-indicator">🟢 Online</span>
+                <button id="settings-btn" class="settings-btn" onclick="openSettings()">⚙️ Settings</button>
             </div>
         </header>
         
@@ -650,6 +930,68 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 <div class="info-card">
                     <h3>Multi-Server Status</h3>
                     <div id="multi-server-list"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>⚙️ Server Management Settings</h2>
+                <span class="close" onclick="closeSettings()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <!-- Network Discovery Section -->
+                <div class="settings-section">
+                    <h3>🔍 Network Discovery</h3>
+                    <div class="network-config">
+                        <div class="form-group">
+                            <label for="network-range">Network Range:</label>
+                            <input type="text" id="network-range" class="form-input" placeholder="172.16.16" value="172.16.16">
+                        </div>
+                        <div class="form-group">
+                            <label for="ssh-username">SSH Username:</label>
+                            <input type="text" id="ssh-username" class="form-input" placeholder="root" value="root">
+                        </div>
+                    </div>
+                    <div class="discovery-controls">
+                        <button id="scan-btn" onclick="startNetworkScan()" class="btn btn-primary">🔍 Scan Network</button>
+                        <button id="stop-scan-btn" onclick="stopNetworkScan()" class="btn btn-secondary" style="display: none;">🛑 Stop Scan</button>
+                        <span id="scan-status" class="scan-status"></span>
+                    </div>
+                    <div id="discovered-servers" class="server-list">
+                        <p>No servers discovered yet. Click "Scan Network" to start discovery.</p>
+                    </div>
+                </div>
+                
+                <!-- Server Connections Section -->
+                <div class="settings-section">
+                    <h3>🔗 Server Connections</h3>
+                    <div id="connected-servers" class="server-list">
+                        <p>No servers connected yet.</p>
+                    </div>
+                </div>
+                
+                <!-- Add Server Section -->
+                <div class="settings-section">
+                    <h3>➕ Add Server Manually</h3>
+                    <div class="add-server-form">
+                        <input type="text" id="server-ip" placeholder="Server IP Address" class="form-input">
+                        <input type="text" id="server-username" placeholder="Username (default: root)" value="root" class="form-input">
+                        <input type="password" id="server-password" placeholder="Password (optional for key auth)" class="form-input">
+                        <button onclick="addServer()" class="btn btn-success">➕ Add Server</button>
+                    </div>
+                </div>
+                
+                <!-- Configuration Section -->
+                <div class="settings-section">
+                    <h3>💾 Configuration</h3>
+                    <div class="config-controls">
+                        <button onclick="saveConfiguration()" class="btn btn-primary">💾 Save Configuration</button>
+                        <button onclick="loadConfiguration()" class="btn btn-secondary">📂 Load Configuration</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -984,6 +1326,284 @@ body {
         grid-template-columns: 1fr;
     }
 }
+
+/* Settings Button */
+.settings-btn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+.settings-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
+/* Modal Styles */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(5px);
+}
+
+.modal-content {
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    margin: 5% auto;
+    padding: 0;
+    border-radius: 15px;
+    width: 80%;
+    max-width: 800px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    animation: modalSlideIn 0.3s ease-out;
+}
+
+@keyframes modalSlideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-50px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.modal-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 20px;
+    border-radius: 15px 15px 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.modal-header h2 {
+    margin: 0;
+    font-size: 1.5rem;
+}
+
+.close {
+    color: white;
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.close:hover {
+    transform: scale(1.2);
+}
+
+.modal-body {
+    padding: 20px;
+}
+
+/* Settings Sections */
+.settings-section {
+    margin-bottom: 30px;
+    padding: 20px;
+    background: rgba(255, 255, 255, 0.7);
+    border-radius: 10px;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.settings-section h3 {
+    margin: 0 0 15px 0;
+    color: #2c3e50;
+    font-size: 1.2rem;
+    border-bottom: 2px solid #667eea;
+    padding-bottom: 8px;
+}
+
+/* Buttons */
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    margin: 5px;
+    font-size: 14px;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+}
+
+.btn-secondary {
+    background: linear-gradient(135deg, #95a5a6 0%, #7f8c8d 100%);
+    color: white;
+}
+
+.btn-success {
+    background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+    color: white;
+}
+
+.btn-danger {
+    background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+    color: white;
+}
+
+.btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+}
+
+/* Form Inputs */
+.form-input {
+    width: 100%;
+    padding: 12px;
+    margin: 5px 0;
+    border: 2px solid #ddd;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: all 0.3s ease;
+}
+
+.form-input:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 10px rgba(102, 126, 234, 0.3);
+}
+
+.network-config {
+    margin-bottom: 20px;
+    padding: 15px;
+    background: rgba(52, 152, 219, 0.1);
+    border-radius: 8px;
+    border-left: 4px solid #3498db;
+}
+
+.form-group {
+    margin-bottom: 15px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.add-server-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    align-items: end;
+}
+
+.add-server-form .btn {
+    grid-column: span 2;
+}
+
+/* Server Lists */
+.server-list {
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.8);
+}
+
+.server-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    margin: 5px 0;
+    background: white;
+    border-radius: 8px;
+    border: 1px solid #eee;
+    transition: all 0.3s ease;
+}
+
+.server-item:hover {
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+    transform: translateY(-2px);
+}
+
+.server-info {
+    flex: 1;
+}
+
+.server-name {
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.server-details {
+    font-size: 12px;
+    color: #7f8c8d;
+    margin-top: 2px;
+}
+
+.server-actions {
+    display: flex;
+    gap: 5px;
+}
+
+.server-status {
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.status-online {
+    background: #27ae60;
+    color: white;
+}
+
+.status-offline {
+    background: #e74c3c;
+    color: white;
+}
+
+.status-connecting {
+    background: #f39c12;
+    color: white;
+}
+
+/* Discovery Controls */
+.discovery-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.scan-status {
+    font-size: 14px;
+    color: #7f8c8d;
+    font-style: italic;
+}
+
+/* Configuration Controls */
+.config-controls {
+    display: flex;
+    gap: 10px;
+}
 """
     
     def _get_javascript(self):
@@ -997,10 +1617,13 @@ let chartData = {
     timestamps: []
 };
 let chartInitialized = false;
-let currentServer = '172.16.16.21'; // Default to local server
+let currentServer = 'LOCAL_IP'; // Default to local server - will be replaced dynamically
 
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', function() {
+    // Replace LOCAL_IP placeholder with actual local IP
+    replaceLocalIPPlaceholder();
+    
     updateDashboard();
     setInterval(updateDashboard, updateInterval);
     
@@ -1011,6 +1634,38 @@ document.addEventListener('DOMContentLoaded', function() {
         console.log('Chart initialized successfully');
     }, 1000);
 });
+
+// Replace LOCAL_IP placeholder with actual local IP
+async function replaceLocalIPPlaceholder() {
+    try {
+        const response = await fetch('/api/local-ip');
+        const data = await response.json();
+        if (data.success && data.local_ip) {
+            const localIP = data.local_ip;
+            
+            // Update server selector
+            const selector = document.getElementById('server-select');
+            if (selector) {
+                selector.innerHTML = `<option value="${localIP}">Local Server (${localIP})</option>`;
+            }
+            
+            // Update current server if it's still the placeholder
+            if (currentServer === 'LOCAL_IP') {
+                currentServer = localIP;
+            }
+            
+            // Replace any remaining LOCAL_IP placeholders in the page
+            document.body.innerHTML = document.body.innerHTML.replace(/LOCAL_IP/g, localIP);
+        }
+    } catch (error) {
+        console.error('Error getting local IP:', error);
+    }
+}
+
+// Check if a server is the local server
+function isLocalServer(ip) {
+    return ip === '127.0.0.1' || ip === 'localhost' || ip === currentServer || ip === 'LOCAL_IP';
+}
 
 // Server change function
 function changeServer() {
@@ -1079,7 +1734,7 @@ function updateStats(data) {
         document.getElementById('disk-bar').style.width = diskPercent + '%';
         
         // Update process count (use load average as approximation for remote server)
-        const processCount = currentServer === '172.16.16.21' ? (data.processes?.length || 0) : Math.round(loadAvg * 10);
+        const processCount = isLocalServer(currentServer) ? (data.processes?.length || 0) : Math.round(loadAvg * 10);
         document.getElementById('process-value').textContent = processCount;
         
         // Update colors based on usage
@@ -1186,7 +1841,7 @@ function updateProcessList(data) {
     const processes = data.processes || [];
     const container = document.getElementById('process-list');
     
-    if (currentServer === '172.16.16.21') {
+    if (isLocalServer(currentServer)) {
         // Local server - show process list
         container.innerHTML = processes.map(proc => 
             `<div class="process-item">
@@ -1455,7 +2110,7 @@ function updateChart(data) {
     const currentCPU = chartData.cpu[chartData.cpu.length - 1] || 0;
     const currentMemory = chartData.memory[chartData.memory.length - 1] || 0;
     
-    const serverName = currentServer === '172.16.16.21' ? 'Local Server' : 'Remote Server';
+    const serverName = isLocalServer(currentServer) ? 'Local Server' : 'Remote Server';
     
     const layout = {
         title: {
@@ -1501,6 +2156,301 @@ function updateChart(data) {
     } catch (error) {
         console.error('Error updating chart:', error);
     }
+}
+
+// Settings Modal Functions
+function openSettings() {
+    document.getElementById('settings-modal').style.display = 'block';
+    loadServerStatus();
+}
+
+function closeSettings() {
+    document.getElementById('settings-modal').style.display = 'none';
+}
+
+// Close modal when clicking outside
+window.onclick = function(event) {
+    const modal = document.getElementById('settings-modal');
+    if (event.target === modal) {
+        closeSettings();
+    }
+}
+
+// Network Discovery Functions
+async function startNetworkScan() {
+    const scanBtn = document.getElementById('scan-btn');
+    const stopBtn = document.getElementById('stop-scan-btn');
+    const status = document.getElementById('scan-status');
+    const networkRange = document.getElementById('network-range').value;
+    const sshUsername = document.getElementById('ssh-username').value;
+    
+    if (!networkRange) {
+        alert('Please enter a network range (e.g., 172.16.16)');
+        return;
+    }
+    
+    scanBtn.style.display = 'none';
+    stopBtn.style.display = 'inline-block';
+    status.textContent = '🔍 Scanning network...';
+    
+    try {
+        const response = await fetch('/api/scan-network', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                network_range: networkRange,
+                username: sshUsername
+            })
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            status.textContent = `✅ Scan completed. Found ${result.discovered_count} servers.`;
+            updateDiscoveredServers(result.discovered_servers);
+        } else {
+            status.textContent = `❌ Scan failed: ${result.error}`;
+        }
+    } catch (error) {
+        status.textContent = `❌ Scan error: ${error.message}`;
+    } finally {
+        scanBtn.style.display = 'inline-block';
+        stopBtn.style.display = 'none';
+    }
+}
+
+async function stopNetworkScan() {
+    try {
+        await fetch('/api/stop-scan', { method: 'POST' });
+        document.getElementById('scan-status').textContent = '🛑 Scan stopped by user.';
+        document.getElementById('scan-btn').style.display = 'inline-block';
+        document.getElementById('stop-scan-btn').style.display = 'none';
+    } catch (error) {
+        console.error('Error stopping scan:', error);
+    }
+}
+
+function updateDiscoveredServers(servers) {
+    const container = document.getElementById('discovered-servers');
+    
+    if (!servers || Object.keys(servers).length === 0) {
+        container.innerHTML = '<p>No servers discovered.</p>';
+        return;
+    }
+    
+    container.innerHTML = Object.entries(servers).map(([ip, info]) => {
+        const serverInfo = info.info || {};
+        const hostname = serverInfo.hostname || 'Unknown';
+        const os = serverInfo.os || 'Unknown';
+        const cpuCores = serverInfo.cpu_cores || 'Unknown';
+        const memory = serverInfo.memory || 'Unknown';
+        
+        return `
+            <div class="server-item">
+                <div class="server-info">
+                    <div class="server-name">${ip}</div>
+                    <div class="server-details">
+                        <strong>Hostname:</strong> ${hostname}<br>
+                        <strong>OS:</strong> ${os}<br>
+                        <strong>CPU:</strong> ${cpuCores} cores<br>
+                        <strong>Memory:</strong> ${memory}<br>
+                        <strong>Discovered:</strong> ${new Date(info.discovered_at || Date.now()).toLocaleString()}
+                    </div>
+                </div>
+                <div class="server-actions">
+                    <button onclick="connectToServer('${ip}')" class="btn btn-success">🔗 Connect</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// Server Connection Functions
+async function connectToServer(ip) {
+    const username = prompt(`Enter username for ${ip} (default: root):`) || 'root';
+    const password = prompt(`Enter password for ${ip} (leave empty for key auth):`);
+    
+    try {
+        const response = await fetch('/api/connect-server', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ip, username, password })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            alert(`✅ Successfully connected to ${ip}`);
+            loadServerStatus();
+            updateServerSelector();
+        } else {
+            alert(`❌ Failed to connect to ${ip}: ${result.error}`);
+        }
+    } catch (error) {
+        alert(`❌ Connection error: ${error.message}`);
+    }
+}
+
+async function disconnectFromServer(ip) {
+    if (!confirm(`Are you sure you want to disconnect from ${ip}?`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/disconnect-server', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ip })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            alert(`✅ Disconnected from ${ip}`);
+            loadServerStatus();
+            updateServerSelector();
+        } else {
+            alert(`❌ Failed to disconnect: ${result.error}`);
+        }
+    } catch (error) {
+        alert(`❌ Disconnect error: ${error.message}`);
+    }
+}
+
+// Manual Server Addition
+async function addServer() {
+    const ip = document.getElementById('server-ip').value.trim();
+    const username = document.getElementById('server-username').value.trim() || 'root';
+    const password = document.getElementById('server-password').value;
+    
+    if (!ip) {
+        alert('Please enter a server IP address.');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/connect-server', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ip, username, password })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            alert(`✅ Successfully connected to ${ip}`);
+            document.getElementById('server-ip').value = '';
+            document.getElementById('server-password').value = '';
+            loadServerStatus();
+            updateServerSelector();
+        } else {
+            alert(`❌ Failed to connect to ${ip}: ${result.error}`);
+        }
+    } catch (error) {
+        alert(`❌ Connection error: ${error.message}`);
+    }
+}
+
+// Configuration Functions
+async function saveConfiguration() {
+    try {
+        const response = await fetch('/api/save-config', { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('✅ Configuration saved successfully!');
+        } else {
+            alert(`❌ Failed to save configuration: ${result.error}`);
+        }
+    } catch (error) {
+        alert(`❌ Save error: ${error.message}`);
+    }
+}
+
+async function loadConfiguration() {
+    try {
+        const response = await fetch('/api/load-config', { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('✅ Configuration loaded successfully!');
+            loadServerStatus();
+            updateServerSelector();
+        } else {
+            alert(`❌ Failed to load configuration: ${result.error}`);
+        }
+    } catch (error) {
+        alert(`❌ Load error: ${error.message}`);
+    }
+}
+
+// Server Status Loading
+async function loadServerStatus() {
+    try {
+        const response = await fetch('/api/server-status');
+        const result = await response.json();
+        
+        if (result.success) {
+            updateConnectedServers(result.connected_servers);
+            updateDiscoveredServers(result.discovered_servers);
+        }
+    } catch (error) {
+        console.error('Error loading server status:', error);
+    }
+}
+
+function updateConnectedServers(servers) {
+    const container = document.getElementById('connected-servers');
+    
+    if (!servers || Object.keys(servers).length === 0) {
+        container.innerHTML = '<p>No servers connected.</p>';
+        return;
+    }
+    
+    container.innerHTML = Object.entries(servers).map(([ip, info]) => `
+        <div class="server-item">
+            <div class="server-info">
+                <div class="server-name">${info.info?.hostname || ip}</div>
+                <div class="server-details">
+                    ${info.info?.os || 'Unknown OS'} | 
+                    CPU: ${info.info?.cpu_cores || 'Unknown'} cores |
+                    Connected: ${new Date(info.connected_at).toLocaleString()}
+                </div>
+            </div>
+            <div class="server-actions">
+                <span class="server-status status-online">🟢 Online</span>
+                <button onclick="disconnectFromServer('${ip}')" class="btn btn-danger">❌ Disconnect</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+// Update server selector dropdown
+function updateServerSelector() {
+    const selector = document.getElementById('server-select');
+    const currentValue = selector.value;
+    
+    // Keep local server as first option - will be updated dynamically
+    selector.innerHTML = '<option value="LOCAL_IP">Local Server (LOCAL_IP)</option>';
+    
+    // Add connected servers
+    fetch('/api/server-status')
+        .then(response => response.json())
+        .then(result => {
+            if (result.success && result.connected_servers) {
+                Object.entries(result.connected_servers).forEach(([ip, info]) => {
+                    const option = document.createElement('option');
+                    option.value = ip;
+                    option.textContent = `${info.info?.hostname || ip} (${ip})`;
+                    selector.appendChild(option);
+                });
+                
+                // Restore current selection if it still exists
+                if (currentValue && selector.querySelector(`option[value="${currentValue}"]`)) {
+                    selector.value = currentValue;
+                }
+            }
+        })
+        .catch(error => console.error('Error updating server selector:', error));
 }
 """
 

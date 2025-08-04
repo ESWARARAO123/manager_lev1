@@ -21,9 +21,14 @@ class SimpleMonitor:
     def get_local_info(self):
         """Get local server information"""
         try:
+            from utils.network_utils import get_local_ip, get_hostname
+            
+            local_ip = get_local_ip()
+            hostname = get_hostname()
+            
             return {
-                'ip': '172.16.16.21',
-                'name': 'Local Server',
+                'ip': local_ip,
+                'name': f'Local Server ({hostname})',
                 'cpu_percent': psutil.cpu_percent(interval=1),
                 'memory_percent': psutil.virtual_memory().percent,
                 'disk_percent': psutil.disk_usage('/').percent,
@@ -33,9 +38,13 @@ class SimpleMonitor:
                 'status': 'Online'
             }
         except Exception as e:
+            from utils.network_utils import get_local_ip, get_hostname
+            local_ip = get_local_ip()
+            hostname = get_hostname()
+            
             return {
-                'ip': '172.16.16.21',
-                'name': 'Local Server',
+                'ip': local_ip,
+                'name': f'Local Server ({hostname})',
                 'error': str(e),
                 'timestamp': datetime.now(),
                 'status': 'Error'
@@ -43,16 +52,9 @@ class SimpleMonitor:
     
     def test_remote_connection(self):
         """Test if remote server is reachable"""
-        try:
-            result = subprocess.run(
-                ['ssh', '-o', 'ConnectTimeout=5', 'root@172.16.16.23', 'echo "test"'],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            return result.returncode == 0
-        except:
-            return False
+        # This method is now deprecated since we use dynamic discovery
+        # Return False to indicate no remote server is configured
+        return False
     
     def display_status(self):
         """Display current status of both servers"""
@@ -78,11 +80,10 @@ class SimpleMonitor:
                 print(f"{info['name']:<20} {info['ip']:<15} {'ERROR':<8} {'ERROR':<10} {'ERROR':<8} {'ERROR':<8} {'❌ Error':<10}")
         
         # Display remote server
-        remote_status = "✅ Online" if self.test_remote_connection() else "❌ Offline"
-        print(f"{'Remote Server':<20} {'172.16.16.23':<15} {'N/A':<8} {'N/A':<10} {'N/A':<8} {'N/A':<8} {remote_status:<10}")
+        print(f"{'Remote Server':<20} {'Not configured':<15} {'N/A':<8} {'N/A':<10} {'N/A':<8} {'N/A':<8} {'Not configured':<10}")
         
         print("-" * 80)
-        print("💡 For detailed remote monitoring, use: ssh root@172.16.16.23")
+        print("💡 For detailed remote monitoring, use the web dashboard with server discovery")
     
     def monitor_local(self):
         """Monitor local server continuously"""
@@ -98,8 +99,8 @@ class SimpleMonitor:
         """Start monitoring both servers"""
         print("🚀 Simple Multi-Server Monitoring")
         print("=" * 50)
-        print("Monitoring: 172.16.16.21 (Local) and 172.16.16.23 (Remote)")
-        print("💡 Remote server requires manual SSH connection")
+        print("Monitoring: Local server only")
+        print("💡 Use the web dashboard with server discovery for remote monitoring")
         print()
         
         self.running = True

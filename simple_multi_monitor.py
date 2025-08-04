@@ -14,9 +14,14 @@ import getpass
 def get_local_system_info():
     """Get system information for local server"""
     try:
+        from utils.network_utils import get_local_ip, get_hostname
+        
+        local_ip = get_local_ip()
+        hostname = get_hostname()
+        
         return {
-            'ip': '172.16.16.21',
-            'name': 'Local Server',
+            'ip': local_ip,
+            'name': f'Local Server ({hostname})',
             'cpu_percent': psutil.cpu_percent(interval=1),
             'memory_percent': psutil.virtual_memory().percent,
             'disk_percent': psutil.disk_usage('/').percent,
@@ -25,9 +30,13 @@ def get_local_system_info():
             'timestamp': datetime.now()
         }
     except Exception as e:
+        from utils.network_utils import get_local_ip, get_hostname
+        local_ip = get_local_ip()
+        hostname = get_hostname()
+        
         return {
-            'ip': '172.16.16.21',
-            'name': 'Local Server',
+            'ip': local_ip,
+            'name': f'Local Server ({hostname})',
             'error': str(e),
             'timestamp': datetime.now()
         }
@@ -105,7 +114,8 @@ def main():
     """Main monitoring function"""
     print("🚀 Simple Multi-Server Monitoring")
     print("=" * 50)
-    print("Monitoring: 172.16.16.21 (Local) and 172.16.16.23 (Remote)")
+    print("Monitoring: Local server only")
+    print("💡 Use the web dashboard with server discovery for remote monitoring")
     print()
     
     # Check if sshpass is available
@@ -121,9 +131,9 @@ def main():
             print("   sudo yum install -y sshpass")
             return
     
-    # Get password for remote server
-    print("🔐 Enter password for remote server (172.16.16.23):")
-    password = getpass.getpass()
+    # This script now only monitors local server
+    print("🔍 Monitoring local server only")
+    print("💡 For remote monitoring, use the web dashboard with server discovery")
     
     print(f"\n⏱️  Starting monitoring... (Press Ctrl+C to stop)")
     print("=" * 50)
@@ -133,8 +143,13 @@ def main():
             # Get local server info
             local_info = get_local_system_info()
             
-            # Get remote server info
-            remote_info = get_remote_system_info('172.16.16.23', password)
+            # Remote monitoring is now handled by the web dashboard
+            remote_info = {
+                'ip': 'Not configured',
+                'name': 'Remote Server',
+                'status': 'Not configured',
+                'note': 'Use web dashboard for remote monitoring'
+            }
             
             # Display status
             display_status([local_info, remote_info])

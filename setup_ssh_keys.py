@@ -37,30 +37,42 @@ def generate_ssh_key():
         print(f"❌ Error generating SSH key: {e}")
         return False
 
-def copy_ssh_key_to_remote():
+def copy_ssh_key_to_remote(target_ip=None):
     """Copy SSH public key to remote server"""
-    print("📤 Copying SSH public key to remote server...")
+    if not target_ip:
+        target_ip = input("Enter target IP address: ").strip()
+        if not target_ip:
+            print("❌ No IP address provided")
+            return False
+    
+    print(f"📤 Copying SSH public key to {target_ip}...")
     print("You will be prompted for the remote server password")
     
     try:
         result = subprocess.run([
-            'ssh-copy-id', 'root@172.16.16.23'
+            'ssh-copy-id', f'root@{target_ip}'
         ], check=True)
         print("✅ SSH key copied to remote server successfully")
         return True
     except subprocess.CalledProcessError as e:
         print(f"❌ Error copying SSH key: {e}")
         print("💡 You can manually copy the key:")
-        print("   ssh-copy-id root@172.16.16.23")
+        print(f"   ssh-copy-id root@{target_ip}")
         return False
 
-def test_ssh_connection():
+def test_ssh_connection(target_ip=None):
     """Test SSH connection to remote server"""
-    print("🔍 Testing SSH connection...")
+    if not target_ip:
+        target_ip = input("Enter target IP address: ").strip()
+        if not target_ip:
+            print("❌ No IP address provided")
+            return False
+    
+    print(f"🔍 Testing SSH connection to {target_ip}...")
     try:
         result = subprocess.run([
             'ssh', '-o', 'ConnectTimeout=5', 
-            '-o', 'BatchMode=yes', 'root@172.16.16.23',
+            '-o', 'BatchMode=yes', f'root@{target_ip}',
             'echo "SSH connection successful"'
         ], capture_output=True, text=True, timeout=10)
         
@@ -97,7 +109,7 @@ def main():
     """Main setup function"""
     print("🚀 SSH Key Setup for Remote Server Access")
     print("=" * 50)
-    print("This will help you set up passwordless SSH access to 172.16.16.23")
+    print("This will help you set up passwordless SSH access to any remote server")
     print()
     
     # Check if SSH key exists
@@ -132,7 +144,7 @@ def main():
     
     print("\n🔧 Manual Steps:")
     print("1. Connect to remote server:")
-    print("   ssh root@172.16.16.23")
+    print("   ssh root@TARGET_IP")
     print()
     print("2. Create .ssh directory (if it doesn't exist):")
     print("   mkdir -p ~/.ssh")
@@ -145,7 +157,7 @@ def main():
     print("   chmod 600 ~/.ssh/authorized_keys")
     print()
     print("5. Test the connection:")
-    print("   ssh root@172.16.16.23")
+    print("   ssh root@TARGET_IP")
     print()
     print("💡 After setup, restart the web dashboard to see remote server data")
 

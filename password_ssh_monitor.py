@@ -14,7 +14,7 @@ class PasswordSSHMonitor:
         self.password = None
         self.ssh_available = False
     
-    def setup_password(self):
+    def setup_password(self, target_ip=None):
         """Get SSH password from user"""
         print("🔐 SSH Password Setup")
         print("=" * 30)
@@ -22,8 +22,16 @@ class PasswordSSHMonitor:
         print("This will be stored in memory only (not saved to disk)")
         print()
         
+        if not target_ip:
+            target_ip = input("Enter target IP address: ").strip()
+            if not target_ip:
+                print("❌ No IP address provided")
+                return False
+        
+        self.target_ip = target_ip
+        
         try:
-            self.password = getpass.getpass("Enter SSH password for root@172.16.16.23: ")
+            self.password = getpass.getpass(f"Enter SSH password for root@{target_ip}: ")
             if self.password:
                 print("✅ Password stored in memory")
                 return True
@@ -36,7 +44,7 @@ class PasswordSSHMonitor:
     
     def test_ssh_with_password(self):
         """Test SSH connection with password"""
-        if not self.password:
+        if not self.password or not hasattr(self, 'target_ip'):
             return False
         
         try:
@@ -44,7 +52,7 @@ class PasswordSSHMonitor:
             result = subprocess.run([
                 'sshpass', '-p', self.password,
                 'ssh', '-o', 'StrictHostKeyChecking=no',
-                'root@172.16.16.23', 'echo "SSH test successful"'
+                f'root@{self.target_ip}', 'echo "SSH test successful"'
             ], capture_output=True, text=True, timeout=10)
             
             return result.returncode == 0
@@ -63,7 +71,7 @@ class PasswordSSHMonitor:
     
     def get_remote_server_info(self):
         """Get detailed remote server information"""
-        if not self.password:
+        if not self.password or not hasattr(self, 'target_ip'):
             return None
         
         try:
@@ -72,7 +80,7 @@ class PasswordSSHMonitor:
             cpu_result = subprocess.run([
                 'sshpass', '-p', self.password,
                 'ssh', '-o', 'StrictHostKeyChecking=no',
-                'root@172.16.16.23', cpu_cmd
+                f'root@{self.target_ip}', cpu_cmd
             ], capture_output=True, text=True, timeout=10)
             cpu_usage = float(cpu_result.stdout.strip()) if cpu_result.stdout.strip() else 0.0
             
@@ -81,7 +89,7 @@ class PasswordSSHMonitor:
             mem_result = subprocess.run([
                 'sshpass', '-p', self.password,
                 'ssh', '-o', 'StrictHostKeyChecking=no',
-                'root@172.16.16.23', mem_cmd
+                f'root@{self.target_ip}', mem_cmd
             ], capture_output=True, text=True, timeout=10)
             
             memory_percent = 0.0
@@ -94,7 +102,7 @@ class PasswordSSHMonitor:
             disk_result = subprocess.run([
                 'sshpass', '-p', self.password,
                 'ssh', '-o', 'StrictHostKeyChecking=no',
-                'root@172.16.16.23', disk_cmd
+                f'root@{self.target_ip}', disk_cmd
             ], capture_output=True, text=True, timeout=10)
             disk_percent = int(disk_result.stdout.strip()) if disk_result.stdout.strip() else 0
             
@@ -103,13 +111,13 @@ class PasswordSSHMonitor:
             load_result = subprocess.run([
                 'sshpass', '-p', self.password,
                 'ssh', '-o', 'StrictHostKeyChecking=no',
-                'root@172.16.16.23', load_cmd
+                f'root@{self.target_ip}', load_cmd
             ], capture_output=True, text=True, timeout=10)
             load_avg = float(load_result.stdout.strip()) if load_result.stdout.strip() else 0.0
             
             return {
-                'name': 'Remote Server',
-                'ip': '172.16.16.23',
+                'name': f'Remote Server ({self.target_ip})',
+                'ip': self.target_ip,
                 'status': 'Online',
                 'cpu_percent': cpu_usage,
                 'memory_percent': memory_percent,
@@ -120,8 +128,8 @@ class PasswordSSHMonitor:
             
         except Exception as e:
             return {
-                'name': 'Remote Server',
-                'ip': '172.16.16.23',
+                'name': f'Remote Server ({self.target_ip})',
+                'ip': self.target_ip,
                 'status': 'Error',
                 'error': str(e),
                 'timestamp': datetime.now()
@@ -146,7 +154,9 @@ class PasswordSSHMonitor:
             
             print(f"{local_info['name']:<20} {local_info['ip']:<15} {cpu_color}{cpu:<7} {mem_color}{memory:<9} {disk:<8} {load:<8} {'✅ Online':<10}")
         else:
-            print(f"{'Local Server':<20} {'172.16.16.21':<15} {'ERROR':<8} {'ERROR':<10} {'ERROR':<8} {'ERROR':<8} {'❌ Error':<10}")
+            from utils.network_utils import get_local_ip
+            local_ip = get_local_ip()
+            print(f"{'Local Server':<20} {local_ip:<15} {'ERROR':<8} {'ERROR':<10} {'ERROR':<8} {'ERROR':<8} {'❌ Error':<10}")
         
         # Remote server
         if remote_info and 'error' not in remote_info:
@@ -161,7 +171,8 @@ class PasswordSSHMonitor:
             print(f"{remote_info['name']:<20} {remote_info['ip']:<15} {cpu_color}{cpu:<7} {mem_color}{memory:<9} {disk:<8} {load:<8} {'✅ Online':<10}")
         else:
             status = remote_info.get('status', 'Unknown') if remote_info else 'Unknown'
-            print(f"{'Remote Server':<20} {'172.16.16.23':<15} {'N/A':<8} {'N/A':<10} {'N/A':<8} {'N/A':<8} {'❌ ' + status:<10}")
+            remote_ip = getattr(self, 'target_ip', 'Not configured')
+            print(f"{'Remote Server':<20} {remote_ip:<15} {'N/A':<8} {'N/A':<10} {'N/A':<8} {'N/A':<8} {'❌ ' + status:<10}")
         
         print("-" * 80)
     
@@ -192,13 +203,18 @@ class PasswordSSHMonitor:
             while True:
                 # Get local server info
                 import psutil
+                from utils.network_utils import get_local_ip, get_hostname
+                
+                local_ip = get_local_ip()
+                hostname = get_hostname()
+                
                 local_info = {
-                    'name': 'Local Server',
-                    'ip': '172.16.16.21',
+                    'name': f'Local Server ({hostname})',
+                    'ip': local_ip,
                     'cpu_percent': psutil.cpu_percent(interval=1),
                     'memory_percent': psutil.virtual_memory().percent,
                     'disk_percent': psutil.disk_usage('/').percent,
-                    'load_avg': psutil.getloadavg()[0]
+                    'load_avg': psutil.getloadavg()[0] if hasattr(psutil, 'getloadavg') else 0.0
                 }
                 
                 # Get remote server info

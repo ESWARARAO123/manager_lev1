@@ -14,11 +14,17 @@ def test_remote_server_data():
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
     
+    # Get target IP from user
+    target_ip = input("Enter target IP address: ").strip()
+    if not target_ip:
+        print("❌ No IP address provided")
+        return False
+    
     # Test SSH connection
-    print("📡 Testing SSH connection...")
+    print(f"📡 Testing SSH connection to {target_ip}...")
     try:
         result = subprocess.run([
-            'ssh', 'root@172.16.16.23', 'echo "SSH connection successful"'
+            'ssh', f'root@{target_ip}', 'echo "SSH connection successful"'
         ], capture_output=True, text=True, timeout=10)
         
         if result.returncode == 0:
@@ -34,7 +40,7 @@ def test_remote_server_data():
     print("\n💻 Getting CPU usage...")
     try:
         cpu_result = subprocess.run([
-            'ssh', 'root@172.16.16.23', 
+            'ssh', f'root@{target_ip}', 
             "top -bn1 | grep 'Cpu(s)' | awk '{print \$2}' | cut -d'%' -f1"
         ], capture_output=True, text=True, timeout=10)
         
@@ -52,7 +58,7 @@ def test_remote_server_data():
     print("\n🧠 Getting memory usage...")
     try:
         mem_result = subprocess.run([
-            'ssh', 'root@172.16.16.23',
+            'ssh', f'root@{target_ip}',
             "free -m | grep '^Mem:' | awk '{print \$3/\$2*100}'"
         ], capture_output=True, text=True, timeout=10)
         
@@ -70,7 +76,7 @@ def test_remote_server_data():
     print("\n💾 Getting disk usage...")
     try:
         disk_result = subprocess.run([
-            'ssh', 'root@172.16.16.23',
+            'ssh', f'root@{target_ip}',
             "df -h / | tail -1 | awk '{print \$5}' | cut -d'%' -f1"
         ], capture_output=True, text=True, timeout=10)
         
@@ -88,7 +94,7 @@ def test_remote_server_data():
     print("\n📊 Getting load average...")
     try:
         load_result = subprocess.run([
-            'ssh', 'root@172.16.16.23',
+            'ssh', f'root@{target_ip}',
             "cat /proc/loadavg | awk '{print \$1}'"
         ], capture_output=True, text=True, timeout=10)
         

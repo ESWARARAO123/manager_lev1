@@ -10,16 +10,56 @@ from datetime import datetime
 
 def check_remote_server():
     """Check detailed status of remote server"""
-    print("🔍 Checking Remote Server (172.16.16.23)")
+    print("🔍 Remote Server Check")
     print("=" * 50)
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
+    
+    # Get target IP from user or use discovery
+    target_ip = input("Enter IP address to check (or press Enter to discover servers): ").strip()
+    
+    if not target_ip:
+        print("🔍 Discovering servers in network...")
+        try:
+            from utils.network_utils import get_network_ranges, discover_servers_in_network
+            
+            network_ranges = get_network_ranges()
+            discovered_servers = []
+            
+            for network_range in network_ranges[:2]:  # Limit to first 2 ranges
+                print(f"📡 Scanning {network_range}...")
+                servers_in_range = discover_servers_in_network(network_range)
+                discovered_servers.extend(servers_in_range)
+            
+            if discovered_servers:
+                print(f"✅ Found {len(discovered_servers)} servers:")
+                for i, server in enumerate(discovered_servers[:5]):  # Show first 5
+                    print(f"   {i+1}. {server}")
+                
+                choice = input(f"Select server (1-{min(len(discovered_servers), 5)}) or enter IP: ").strip()
+                if choice.isdigit() and 1 <= int(choice) <= len(discovered_servers):
+                    target_ip = discovered_servers[int(choice) - 1]
+                else:
+                    target_ip = choice
+            else:
+                print("❌ No servers discovered")
+                return
+        except ImportError:
+            print("❌ Network discovery not available")
+            return
+    
+    if not target_ip:
+        print("❌ No target IP specified")
+        return
+    
+    print(f"🔍 Checking {target_ip}")
+    print("=" * 50)
     
     # Test connectivity
     print("📡 Testing connectivity...")
     try:
         ping_result = subprocess.run(
-            ['ping', '-c', '1', '-W', '2', '172.16.16.23'],
+            ['ping', '-c', '1', '-W', '2', target_ip],
             capture_output=True,
             text=True,
             timeout=5
@@ -37,7 +77,7 @@ def check_remote_server():
     print("\n🔐 Testing SSH connectivity...")
     try:
         ssh_result = subprocess.run(
-            ['ssh', '-o', 'ConnectTimeout=5', 'root@172.16.16.23', 'echo "SSH test successful"'],
+            ['ssh', '-o', 'ConnectTimeout=5', f'root@{target_ip}', 'echo "SSH test successful"'],
             capture_output=True,
             text=True,
             timeout=10
@@ -46,7 +86,7 @@ def check_remote_server():
             print("✅ SSH: Successful")
         else:
             print("❌ SSH: Failed - Password required or connection refused")
-            print("💡 Try: ssh root@172.16.16.23")
+            print(f"💡 Try: ssh root@{target_ip}")
             return
     except Exception as e:
         print(f"❌ SSH: Error - {e}")
@@ -58,7 +98,7 @@ def check_remote_server():
         # CPU usage
         cpu_cmd = "top -bn1 | grep 'Cpu(s)' | awk '{print $2}' | cut -d'%' -f1"
         cpu_result = subprocess.run(
-            ['ssh', 'root@172.16.16.23', cpu_cmd],
+            ['ssh', f'root@{target_ip}', cpu_cmd],
             capture_output=True,
             text=True,
             timeout=10
@@ -68,7 +108,7 @@ def check_remote_server():
         # Memory usage
         mem_cmd = "free -m | grep '^Mem:' | awk '{print $2, $3, $4, $3/$2*100}'"
         mem_result = subprocess.run(
-            ['ssh', 'root@172.16.16.23', mem_cmd],
+            ['ssh', f'root@{target_ip}', mem_cmd],
             capture_output=True,
             text=True,
             timeout=10
@@ -87,7 +127,7 @@ def check_remote_server():
         # Disk usage
         disk_cmd = "df -h / | tail -1 | awk '{print $2, $3, $4, $5}'"
         disk_result = subprocess.run(
-            ['ssh', 'root@172.16.16.23', disk_cmd],
+            ['ssh', f'root@{target_ip}', disk_cmd],
             capture_output=True,
             text=True,
             timeout=10
@@ -106,7 +146,7 @@ def check_remote_server():
         # Load average
         load_cmd = "cat /proc/loadavg | awk '{print $1, $2, $3}'"
         load_result = subprocess.run(
-            ['ssh', 'root@172.16.16.23', load_cmd],
+            ['ssh', f'root@{target_ip}', load_cmd],
             capture_output=True,
             text=True,
             timeout=10
@@ -120,7 +160,7 @@ def check_remote_server():
         # Uptime
         uptime_cmd = "uptime -p"
         uptime_result = subprocess.run(
-            ['ssh', 'root@172.16.16.23', uptime_cmd],
+            ['ssh', f'root@{target_ip}', uptime_cmd],
             capture_output=True,
             text=True,
             timeout=10
@@ -158,7 +198,7 @@ def main():
     """Main function"""
     print("🚀 Remote Server Check Tool")
     print("=" * 40)
-    print("This tool will check the status of 172.16.16.23")
+    print("This tool will check the status of any remote server")
     print("You may be prompted for SSH password")
     print()
     
